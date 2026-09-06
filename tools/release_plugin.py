@@ -69,8 +69,8 @@ def write_plugins_xml(repo, ver, fname, size, digest):
     dl = f"https://github.com/{repo}/releases/download/v{ver}/{fname}"
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <plugins>
-  <pyqgis_plugin name="Cropland Delineator" version="{ver}">
-    <name>Cropland Delineator</name>
+  <pyqgis_plugin name="Cropland Delineator 耕地标注工作台" version="{ver}">
+    <name>Cropland Delineator 耕地标注工作台</name>
     <description>耕地标注工作台：渔网格减法勾绘 + 磁力走线 + SAM 点选分割 + 操作台账</description>
     <version>{ver}</version>
     <qgis_minimum_version>4.0</qgis_minimum_version>
