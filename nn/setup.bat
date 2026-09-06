@@ -20,20 +20,34 @@ if errorlevel 1 (
 )
 set PIP=.venv\Scripts\pip.exe
 
+echo [2/4] 安装 torch / torchvision（默认走阿里云国内镜像，失败自动回退官方源）
 nvidia-smi >nul 2>nul
 if errorlevel 1 (
-    echo [2/4] 未检测到 NVIDIA GPU → 安装 CPU 版 torch（点选可用，每格约 10-30 秒较慢）
-    set IDX=https://download.pytorch.org/whl/cpu
+    echo        未检测到 NVIDIA GPU → 安装 CPU 版（点选可用，每格约 10-30 秒较慢）
+    set CU=cpu
 ) else (
-    echo [2/4] 检测到 NVIDIA GPU → 安装 CUDA 版 torch/torchvision（约 2-3 GB，耐心等）
-    set IDX=https://download.pytorch.org/whl/cu124
+    echo        检测到 NVIDIA GPU → 安装 CUDA 版（约 2-3 GB，耐心等）
+    set CU=cu124
 )
-"%PIP%" install torch==2.6.0 torchvision==0.21.0 --index-url %IDX%
-if errorlevel 1 (echo [错误] torch 安装失败：检查网络（国内可挂代理）后重跑本脚本续装 & pause & exit /b 1)
 
-echo [3/4] 安装 segment-anything / numpy
-"%PIP%" install segment-anything numpy
-if errorlevel 1 (echo [错误] 依赖安装失败 & pause & exit /b 1)
+rem 可用环境变量覆盖镜像：set PYTORCH_INDEX=... / set PIP_INDEX=... 后再跑本脚本
+if "%PYTORCH_INDEX%"=="" set PYTORCH_INDEX=https://mirrors.aliyun.com/pytorch-wheels/%CU%
+if "%PIP_INDEX%"=="" set PIP_INDEX=https://mirrors.aliyun.com/pypi/simple/
+
+"%PIP%" install torch==2.6.0 torchvision==0.21.0 --index-url %PYTORCH_INDEX%
+if errorlevel 1 (
+    echo [提示] 镜像安装失败，改用官方源重试（较慢，可挂代理）…
+    "%PIP%" install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/%CU%
+    if errorlevel 1 (echo [错误] torch 安装失败：检查网络后重跑本脚本续装 & pause & exit /b 1)
+)
+
+echo [3/4] 安装 segment-anything / numpy（阿里云 PyPI 镜像）
+"%PIP%" install segment-anything numpy -i %PIP_INDEX%
+if errorlevel 1 (
+    echo [提示] 镜像失败，改用官方 PyPI…
+    "%PIP%" install segment-anything numpy
+    if errorlevel 1 (echo [错误] 依赖安装失败 & pause & exit /b 1)
+)
 
 echo [4/4] 下载 SAM ViT-B 权重（358MB，失败就重跑本脚本续传）
 if not exist ckpt mkdir ckpt
