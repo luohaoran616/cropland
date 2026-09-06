@@ -36,13 +36,22 @@ from .lasso import _DTYPES  # QGIS 块读取的数据类型映射（WMS 兜底�
 def find_nn_dir():
     """找到 nn/ 推理环境（.venv + sam_click.py + 权重）；找不到返回 None。
 
-    查找顺序：环境变量 CROPLAND_NN_DIR → 插件目录旁的开发布局 alpha/nn。
+    查找顺序：环境变量 CROPLAND_NN_DIR → QSettings（朋友在 Python 控制台
+    一行代码指定，免环境变量免重启）→ 插件目录旁的开发布局 alpha/nn。
     """
     here = os.path.dirname(os.path.abspath(__file__))
     cands = []
     env = os.environ.get("CROPLAND_NN_DIR")
     if env:
         cands.append(env)
+    try:
+        from qgis.PyQt.QtCore import QSettings
+        qs_dir = QSettings().value(
+            "cropland_delineator/nn_dir", "", type=str)
+        if qs_dir:
+            cands.append(qs_dir)
+    except Exception:
+        pass
     cands += [
         os.path.join(here, "..", "..", "nn"),   # alpha/qgis-plugin/cropland_delineator → alpha/nn
         os.path.join(here, "..", "nn"),

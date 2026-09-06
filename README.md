@@ -31,26 +31,26 @@ QGIS 4 插件：面向 5m 卫星影像的耕地逐格标注（减法勾绘）。
 
 ## 可选：启用 SAM 点选分割（🖱 点选）
 
-需要 NVIDIA GPU（约 1GB 显存）：
+两条命令（Linux，需约 4GB 磁盘；有 NVIDIA GPU 体验最好，没有也能跑 CPU 模式）：
 
 ```bash
 git clone https://github.com/luohaoran616/cropland.git
-cd cropland/nn
-
-# 1) Python 环境（uv 或 venv 均可，需要 torch(CUDA) + segment-anything + numpy）
-uv venv && uv pip install torch --index-url https://download.pytorch.org/whl/cu124
-uv pip install segment-anything numpy
-
-# 2) 下载 SAM ViT-B 权重（约 358MB，Apache-2.0）放 ckpt/
-wget -O ckpt/sam_vit_b_01ec64.pth \
-  https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+bash cropland/nn/setup.sh
 ```
 
-插件会按 `仓库布局 nn/` 自动发现（把插件与 nn/ 放成同样的相对位置），
-或设置环境变量 `CROPLAND_NN_DIR` 指向 nn/ 目录后重启 QGIS。
-没配也不影响其他功能，日志会提示一句。
+脚本自动完成：建 Python 3.12 venv → 装 torch/torchvision（自动判 GPU/CPU，
+国内慢可用 `PYTORCH_INDEX=https://mirrors.aliyun.com/pytorch-wheels/cu124` 加速）
+→ 装 segment-anything → 下载 SAM ViT-B 权重（358MB，断点续传 + sha256 校验）。
 
-`nn/` 目录另有离线边界证据生成管线（磁力走线增强，可选），见 [nn/README.md](nn/README.md)。
+装完后按脚本提示，在 QGIS 的 Python 控制台粘贴一行（路径换成自己机器上的，
+**立即可用、无需重启 QGIS**）：
+
+```python
+from qgis.PyQt.QtCore import QSettings; QSettings().setValue("cropland_delineator/nn_dir", "/你的路径/cropland/nn")
+```
+
+没配也不影响其他功能，日志会提示一句。`nn/` 目录另有离线边界证据生成管线
+（磁力走线增强，可选），见 [nn/README.md](nn/README.md)。
 
 ## 开发
 
