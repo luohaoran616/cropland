@@ -17,7 +17,11 @@ fi
 # 1) 提交并推送（白名单 .gitignore 保证只含插件代码与 nn 脚本）
 git add -A
 git commit -m "release v$VER" || echo "[跳过] 无待提交变更"
-git push -u origin main
+git push -u origin main || {
+    echo "[提示] 远端已有提交（如建仓时自动生成的 README），rebase 后重推…"
+    git pull --rebase --allow-unrelated-histories origin main
+    git push -u origin main
+}
 
 # 2) 打包 + 建 Release（带 ZIP 与 plugins.xml 两个资产）
 python3 tools/release_plugin.py --repo "$REPO"
