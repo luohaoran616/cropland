@@ -16,11 +16,30 @@
 """
 import base64
 import json
+import os
 import sys
 
-import numpy as np
-import torch
-from segment_anything import SamPredictor, sam_model_registry
+# 自愈路径：确保本仓库 venv 的 site-packages 在 sys.path 里。
+# 实测有"同一解释器命令行可导入、被 QGIS 拉起却 ModuleNotFoundError"的灵异
+# 场景（混合布局 venv / 环境变量残留等），显式注入一劳永逸。
+_here = os.path.dirname(os.path.abspath(__file__))
+for _sp in (os.path.join(_here, ".venv", "Lib", "site-packages"),
+            os.path.join(_here, ".venv", "lib", "site-packages"),
+            os.path.join(_here, ".venv", "lib",
+                         "python%d.%d" % sys.version_info[:2], "site-packages")):
+    if os.path.isdir(_sp) and _sp not in sys.path:
+        sys.path.append(_sp)
+
+try:
+    import numpy as np
+    import torch
+    from segment_anything import SamPredictor, sam_model_registry
+except ImportError as _e:  # 死也要死明白：把现场打到 stderr 给插件日志
+    sys.stderr.write(
+        "import 失败：%r\n  executable=%s\n  prefix=%s\n  sys.path=%s\n"
+        % (_e, sys.executable, sys.prefix, sys.path))
+    sys.stderr.flush()
+    raise
 
 
 def main(ckpt):
