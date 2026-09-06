@@ -27,7 +27,7 @@ git push -u origin main || {
 python3 tools/release_plugin.py --repo "$REPO"
 gh release create "v$VER" \
     "dist/cropland_delineator-$VER.zip" dist/plugins.xml \
-    -t "v$VER" -N "耕地标注工作台 v$VER。升级直接在 QGIS 插件管理器里点「升级」。"
+    -t "v$VER" -n "耕地标注工作台 v$VER。升级直接在 QGIS 插件管理器里点「升级」。"
 
 echo
 echo "✅ 发布完成。朋友侧插件源 URL（在 QGIS 插件管理器 → 设置 → 添加，一次即可）："
