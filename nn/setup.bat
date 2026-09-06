@@ -61,6 +61,13 @@ if errorlevel 1 (
 
 echo [自检]
 .venv\Scripts\python.exe -c "import torch, segment_anything; print('  torch', torch.__version__, '| CUDA', torch.cuda.is_available()); print('  segment-anything ok')"
+if errorlevel 1 (
+    echo.
+    echo [错误] 自检失败：torch / segment-anything 没有装进 .venv。
+    echo        上面紧挨着的报错就是原因（常见：下载中断、杀软拦截）。
+    echo        直接重跑本脚本即可续装；反复失败就把报错截图发回来。
+    pause & exit /b 1
+)
 
 echo.
 echo ==============================================

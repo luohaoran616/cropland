@@ -270,6 +270,13 @@ class SamClickService(QObject):
         self._out = _Pump(self._proc.stdout)
         self._out.line.connect(self._on_line)
         self._out.start()
+        # worker 没到 ready 就断管（如 torch 没装好即崩）：给一句人话提示
+        self._out.finished.connect(self._died_early)
+
+    def _died_early(self):
+        if self.device is None:
+            self._log("[点选] SAM worker 启动即退出——多半是 nn/ 环境没装完整，"
+                      "请重跑 nn/setup.sh（或 setup.bat）续装后再试")
         self._err = _Pump(self._proc.stderr)
         self._err.line.connect(lambda s: log(f"[SAM] {s}"))
         self._err.start()
