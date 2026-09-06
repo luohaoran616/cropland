@@ -33,6 +33,15 @@ from .lasso import _DTYPES  # QGIS 块读取的数据类型映射（WMS 兜底�
 
 # ---------- 环境发现 ----------
 
+def _venv_python(nn_dir):
+    """venv 的 Python 路径：Linux .venv/bin/python，Windows .venv\\Scripts\\python.exe。"""
+    for p in (os.path.join(nn_dir, ".venv", "bin", "python"),
+              os.path.join(nn_dir, ".venv", "Scripts", "python.exe")):
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 def find_nn_dir():
     """找到 nn/ 推理环境（.venv + sam_click.py + 权重）；找不到返回 None。
 
@@ -60,9 +69,9 @@ def find_nn_dir():
     for c in cands:
         if not c or not os.path.isdir(c):
             continue
-        py = os.path.join(c, ".venv", "bin", "python")
+        py = _venv_python(c)
         worker = os.path.join(c, "sam_click.py")
-        if not (os.path.isfile(py) and os.path.isfile(worker)):
+        if not (py and os.path.isfile(worker)):
             continue
         import glob
         if glob.glob(os.path.join(c, "ckpt", "sam_vit_b*.pth")):
@@ -76,11 +85,13 @@ def find_nn_dir():
 def service_argv(nn_dir):
     """(python, [worker, ckpt, ...])。"""
     import glob
+    py = _venv_python(nn_dir)
+    if py is None:
+        raise RuntimeError(f"{nn_dir}/.venv 里找不到 python（bin/python 或 Scripts/python.exe）")
     hits = sorted(glob.glob(os.path.join(nn_dir, "ckpt", "sam_vit_b*.pth")))
     if not hits:
         raise RuntimeError(f"{nn_dir}/ckpt 里没有 sam_vit_b*.pth 权重")
-    return (os.path.join(nn_dir, ".venv", "bin", "python"),
-            [os.path.join(nn_dir, "sam_click.py"), hits[0]])
+    return (py, [os.path.join(nn_dir, "sam_click.py"), hits[0]])
 
 
 # ---------- 影像窗口：格 → uint8 RGB npy ----------
