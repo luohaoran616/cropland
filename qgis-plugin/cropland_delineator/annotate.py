@@ -2184,7 +2184,7 @@ class AnnotateDock(QDockWidget):
         layout.addWidget(self.log_box, 1)
 
         self._sync_ui()
-        self.append_log(f"[i] 工作台就绪 v{self._plugin_version()}：展开"
+        self.append_log(f"[i] 工作台就绪 v{_plugin_version()}：展开"
                         "「① 标注数据」→ 选渔网/文件 → 打开"
                         "→ 选中格建底板 → 开画")
         self.append_log("[i] 快捷键：E 选中即挖除 · N 下一格 · M 磁力切分 · "
