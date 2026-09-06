@@ -283,6 +283,7 @@ class SamClickService(QObject):
         self._last_embed = None
         self.device = None
         self._ready_pyhome = None     # worker 实际看到的 PYTHONHOME（诊断用）
+        self._log(f"[点选] SAM worker 启动：{python}")
         self._out = _Pump(self._proc.stdout)
         self._out.line.connect(self._on_line)
         self._out.start()

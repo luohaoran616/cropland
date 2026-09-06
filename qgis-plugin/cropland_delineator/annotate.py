@@ -1595,6 +1595,20 @@ class AnnotationController:
         self.layer.triggerRepaint()
 
 
+def _plugin_version():
+    """读 metadata.txt 版本号（现场排查"跑的是哪版"用）。"""
+    try:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "metadata.txt")
+        with open(p, encoding="utf-8") as fh:
+            for ln in fh:
+                if ln.startswith("version="):
+                    return ln.strip().split("=", 1)[1]
+    except Exception:
+        pass
+    return "?"
+
+
 class FoldGroup(QGroupBox):
     """点击标题栏折叠/展开的分组（▾ 展开 / ▸ 折叠）。
 
@@ -2170,7 +2184,8 @@ class AnnotateDock(QDockWidget):
         layout.addWidget(self.log_box, 1)
 
         self._sync_ui()
-        self.append_log("[i] 工作台就绪：展开「① 标注数据」→ 选渔网/文件 → 打开"
+        self.append_log(f"[i] 工作台就绪 v{self._plugin_version()}：展开"
+                        "「① 标注数据」→ 选渔网/文件 → 打开"
                         "→ 选中格建底板 → 开画")
         self.append_log("[i] 快捷键：E 选中即挖除 · N 下一格 · M 磁力切分 · "
                         "画路按住 Shift 正交锁")
