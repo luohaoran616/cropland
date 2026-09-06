@@ -1,0 +1,17 @@
+# 白名单式：默认全部忽略，只放行要发布的插件代码与 nn 脚本。
+# 影像/标注数据/权重/venv/论文/写作等一律不进仓库。
+/*
+!/.gitignore
+!/README.md
+!/tools/
+!/qgis-plugin/
+/qgis-plugin/*
+!/qgis-plugin/cropland_delineator/
+/qgis-plugin/cropland_delineator/*
+!/qgis-plugin/cropland_delineator/*.py
+!/qgis-plugin/cropland_delineator/metadata.txt
+!/nn/
+/nn/*
+!/nn/*.py
+!/nn/README.md
+/dist/
