@@ -3,6 +3,7 @@
 /*
 !/.gitignore
 !/README.md
+!/使用指南.md
 !/tools/
 !/qgis-plugin/
 /qgis-plugin/*
