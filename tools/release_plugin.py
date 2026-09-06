@@ -109,7 +109,7 @@ def main():
     print(f"[索引] {xml_path}")
     print("\n下一步（需 gh 已登录）：")
     print(f"  gh release create v{ver} {zip_path} {xml_path} "
-          f"-t v{ver} -N '耕地标注工作台 v{ver}'")
+          f"-t v{ver} -n '耕地标注工作台 v{ver}'")
     print(f"\n朋友侧插件源 URL（添加一次，永久有效，自动跟随最新版）：")
     print(f"  https://github.com/{args.repo}/releases/latest/download/plugins.xml")
 
