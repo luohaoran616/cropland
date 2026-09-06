@@ -260,13 +260,21 @@ class SamClickService(QObject):
     def __init__(self, python, argv, log):
         super().__init__()
         self._log = log
+        # QGIS（尤其 Windows）给自身内嵌 Python 设了 PYTHONHOME/PYTHONPATH，
+        # 子进程一旦继承，venv 的 python 会被指向 QGIS 的库目录——torch
+        # 装在 venv 里自然 import 不到。启动 worker 前必须剥掉这些变量。
+        env = dict(os.environ)
+        for k in list(env):
+            if k.upper() in ("PYTHONHOME", "PYTHONPATH"):
+                del env[k]
         self._proc = subprocess.Popen(
-            [python] + argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1,
-            cwd=os.path.dirname(argv[0]))
+            [python] + argv, env=env, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            bufsize=1, cwd=os.path.dirname(argv[0]))
         self._pending = None          # (cb,) 单在途请求
         self._last_embed = None
         self.device = None
+        self._ready_pyhome = None     # worker 实际看到的 PYTHONHOME（诊断用）
         self._out = _Pump(self._proc.stdout)
         self._out.line.connect(self._on_line)
         self._out.start()
@@ -297,6 +305,7 @@ class SamClickService(QObject):
             return
         if obj.get("event") == "ready":
             self.device = obj.get("device")
+            self._ready_pyhome = obj.get("pyhome")
             self._log(f"[点选] SAM 就绪（{self.device}）")
             return
         if self._pending is None:
