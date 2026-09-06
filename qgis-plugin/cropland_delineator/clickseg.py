@@ -34,9 +34,17 @@ from .lasso import _DTYPES  # QGIS 块读取的数据类型映射（WMS 兜底�
 # ---------- 环境发现 ----------
 
 def _venv_python(nn_dir):
-    """venv 的 Python 路径：Linux .venv/bin/python，Windows .venv\\Scripts\\python.exe。"""
-    for p in (os.path.join(nn_dir, ".venv", "bin", "python"),
-              os.path.join(nn_dir, ".venv", "Scripts", "python.exe")):
+    """venv 的 Python 路径：按本机平台优先（Windows=Scripts\\python.exe，
+    Linux=bin/python），另一种布局只做兜底。
+
+    实测坑：先用 Git Bash/WSL 跑过 setup.sh 会留下 bin/ 布局的残留 python，
+    若在 Windows 上按"谁存在用谁"就会启动那个空壳（torch/numpy 都不在它
+    的 site-packages 里）——必须以平台为准。"""
+    pairs = ((("Scripts", "python.exe"), ("bin", "python"))
+             if os.name == "nt" else
+             (("bin", "python"), ("Scripts", "python.exe")))
+    for d, f in pairs:
+        p = os.path.join(nn_dir, ".venv", d, f)
         if os.path.isfile(p):
             return p
     return None
