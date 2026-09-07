@@ -212,6 +212,11 @@ class LassoEngine:
     对外坐标一律是栅格层自己的 CRS；调用方负责与画布 CRS 的互转。
     """
 
+    # 边界证据融合参数（严格次级语义，见 __init__ 注释）
+    EV_THETA = 0.45   # 归零阈值：压掉晕带外裙
+    EV_GAMMA = 1.3    # 幂次：收窄有效带宽
+    EV_FLOOR = 0.35   # 证据代价下限：再强也贵于真实梯度线
+
     def __init__(self, raster_layer, extent, extent_crs, margin_px=256,
                  evidence=None):
         if not isinstance(raster_layer, QgsRasterLayer) \
@@ -239,9 +244,18 @@ class LassoEngine:
         if evidence is not None:
             ev = np.asarray(evidence, dtype=np.float32)
             if ev.shape == cost.shape:
-                # 神经网络边界证据（P 越大越像边界）与梯度证据取更便宜的一路：
-                # 证据只能新增可信线（无亮度反差的边界），不会削弱梯度已认出的线
-                cost = np.minimum(cost, 1.0 - np.clip(ev, 0.0, 1.0))
+                # 证据严格次级（v0.9.1 实机教训：纯 min 融合下，SAM 证据的
+                # 宽晕带比弱梯度线还便宜，A* 不再死贴边界——用户实测
+                # "吸附变松、效果更差"）。三道闸：
+                # ①EV_THETA 以下归零——压掉模糊晕带外裙（2_6 实测 p90≈0.1，
+                #   有效证据集中在顶部 ~6%，砍掉裙部不伤主线）；
+                # ②EV_GAMMA 幂次收窄有效带宽；
+                # ③EV_FLOOR 代价下限——证据线再强也贵于梯度认得出的线，
+                #   只有梯度全盲区（均匀地面 cost≈1）证据才有救场资格。
+                ev = np.clip((ev - self.EV_THETA) / (1.0 - self.EV_THETA),
+                             0.0, 1.0) ** self.EV_GAMMA
+                ev_cost = self.EV_FLOOR + (1.0 - ev) * (1.0 - self.EV_FLOOR)
+                cost = np.minimum(cost, ev_cost)
                 self.used_evidence = True
         self.finder = GridPathFinder(cost)
         self.lum = lum.astype(np.float32)   # 亮度矩阵（QA 暗斑检查用）
