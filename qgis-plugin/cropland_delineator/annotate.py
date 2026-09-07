@@ -1245,6 +1245,7 @@ class AnnotationController:
 
     def undo(self):
         if self.layer is None:
+            self.log("[i] 当前没有打开的标注会话，无可撤销")
             return
         stack = self.layer.undoStack()
         if stack.canUndo():
@@ -1252,6 +1253,8 @@ class AnnotationController:
             self.layer.triggerRepaint()
             self.log("[i] 已撤销上一笔")
             self.report_stats()
+        else:
+            self.log("[i] 撤销栈已空：没有可撤销的操作（保存/切格会清空撤销栈）")
 
     # ---------- 操作台账：记录 / 重放 / 回退（Ctrl+Z 自动对齐） ----------
 
@@ -1728,12 +1731,12 @@ class AnnotateDock(QDockWidget):
         严格限定范围避免劫持：工作台隐藏、非本插件工具、其它窗口
         （对话框/弹层）、文本输入框内的一律放行。
 
-        Ctrl+Z 特殊：主窗口原生撤销是 QShortcut，按键先以
-        ShortcutOverride 事件征询焦点控件，无人认领则快捷键直接触发、
-        KeyPress 根本不会进到这里（v0.8.10 实机事故：点选落点后按
-        Ctrl+Z 撤掉的是底板）。因此笔迹进行中的 Ctrl+Z 要在
-        ShortcutOverride 阶段就 accept 截胡，按键随即以普通 KeyPress
-        回到下面同一套梯级；无笔迹时放行，让原生撤销照常工作。"""
+        Ctrl+Z 特殊：主窗口原生撤销是 QShortcut，作用于**当前活动图层**的
+        撤销栈——标注时活动层往往不是标注层，触发等于空操作（v0.8.11
+        实机事故：无落点按 Ctrl+Z 毫无反应）。因此工具激活期间 Ctrl+Z
+        一律在 ShortcutOverride 阶段认领，阻断原生快捷键抢跑，按键随即
+        以普通 KeyPress 回到下面同一套梯级：有笔迹=退点，无笔迹=
+        wb.undo()（直接打标注层自己的 undoStack，与活动图层无关）。"""
         ty = ev.type()
         if (ty not in (QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride)
                 or not self.isVisible()):
@@ -1754,7 +1757,7 @@ class AnnotateDock(QDockWidget):
         ctrl_z = (key == Qt.Key.Key_Z
                   and mods == Qt.KeyboardModifier.ControlModifier)
         if ty == QEvent.Type.ShortcutOverride:
-            if ctrl_z and tool.has_stroke():
+            if ctrl_z:
                 ev.accept()   # 认领：原生撤销快捷键不再触发
                 return True
             return super().eventFilter(obj, ev)
@@ -1769,9 +1772,10 @@ class AnnotateDock(QDockWidget):
                 tool._finish()
                 return True
         elif ctrl_z:
-            # 笔迹已收：Ctrl+Z=撤销上一笔落地（显式走原生撤销，
-            # 不经过快捷键系统，reload 残留干扰不到）
-            self._native_undo()
+            # 笔迹已收：Ctrl+Z=撤销上一笔落地。直打标注层自己的 undoStack
+            # （mActionUndo 作用于"当前活动图层"，标注时活动层常是影像，
+            # 触发等于空操作）；台账经 _on_undo_index 自动对齐。
+            self.wb.undo()
             return True
         return super().eventFilter(obj, ev)
 
@@ -1810,14 +1814,6 @@ class AnnotateDock(QDockWidget):
             sc.activated.connect(when_visible(fn))
             shortcuts.append(sc)
         return shortcuts
-
-    def _native_undo(self):
-        from qgis.PyQt.QtWidgets import QAction
-        act = self.iface.mainWindow().findChild(QAction, "mActionUndo")
-        if act is not None:
-            act.trigger()
-        else:
-            self.wb.undo()
 
     # ---------- 操作台账 / 进度总览 ----------
 
