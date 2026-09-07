@@ -10,11 +10,12 @@ QGIS 4 插件：面向 5m 卫星影像的耕地逐格标注（减法勾绘）。
 
 ## 功能速览
 
-- **标注工作台侧边栏**：格导航（建底板 / 缩放 / 下一格）、笔刷 2×4 网格、
+- **标注工作台侧边栏**：格导航（建底板 / 缩放 / 下一格）、笔刷网格、
   收尾 QA（碎块清理 / 重叠 / 漏画 / 暗斑 / 报表 / 进度）、操作日志；
 - **笔刷**：道路（缓冲差集）、切分、框挖、多边形挖/补画、磁力切分/磁力道路
-  （沿影像梯度的 A\* 走线，可选 NN 边界证据增强）、**SAM 点选分割**
-  （点一下目标内部自动出掩码，正/负点迭代，Enter 落地）；
+  （沿影像梯度的 A\* 走线，可选 NN 边界证据增强）、**磁力补画**
+  （沿边界点一圈顶点整块"磁力描"，闭合落地为补画/挖除）、
+  **SAM 点选分割**（点一下目标内部自动出掩码，正/负点迭代，Enter 落地）；
 - **操作台账**：每笔几何+参数进 JSONL，回退到任意步、删除任意单步、
   改道路宽度重放；🥞 分层视图把当前格分解为底板 / 补块 / 扣除三个
   独立图层，图上选中即可删除对应操作；
@@ -74,7 +75,7 @@ cd qgis-plugin/cropland_delineator
 QT_QPA_PLATFORM=offscreen \
 PYTHONPATH=/usr/share/qgis/python:$(git rev-parse --show-toplevel)/qgis-plugin \
 python3 tests/test_ledger.py        # 台账 12 组
-python3 tests/test_lasso.py         # 磁力引擎 14 组
+python3 tests/test_lasso.py         # 磁力引擎 15 组
 
 # 发版：改 metadata.txt 版本号后
 bash tools/publish.sh
