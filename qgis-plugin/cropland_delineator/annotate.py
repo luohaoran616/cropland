@@ -226,6 +226,21 @@ class AnnotationController:
             lambda fid, L=self.layer: self._on_feature_added(L, fid))
         self._enable_snapping()
         self.layer.startEditing()
+        # 同一 GPKG 还有别的图层开着：Windows 上同库多图层会互相锁，
+        # 是"保存失败被占用"的头号实机原因（QGIS #23676），提前预警
+        try:
+            others = [
+                L.name() for L in QgsProject.instance().mapLayers().values()
+                if isinstance(L, QgsVectorLayer) and L.isValid()
+                and L.id() != self.layer.id()
+                and L.source().split("|")[0] == path]
+            if others:
+                self.log("[提示] 同一个 GPKG 文件还有别的图层开着（"
+                         + "、".join(others[:3])
+                         + "）——Windows 上会互相锁导致保存失败，"
+                         "建议移除用不到的")
+        except Exception:
+            pass
         self.current_cell = prev_cell
         self.cell_geom = None
         if prev_cell is None:
@@ -1245,21 +1260,43 @@ class AnnotationController:
         if dlg is not None and hasattr(dlg, "refresh_progress"):
             dlg.refresh_progress()
 
+    def _commit_layer(self, what="保存"):
+        """提交编辑缓冲；失败时透出 QGIS 的真实报错并自动重试一次。
+
+        Windows 实机（v0.9.3）：杀毒实时扫描常瞬锁 .gpkg/-wal，一击
+        失败重试通常就过；仍失败则把 commitErrors（真实 OGR 报错，
+        旧版只打"被占用"把细节吞了）连同排查提示一起进日志。"""
+        if self.layer is None:
+            return False
+        if self.layer.isEditCommandActive():
+            self.layer.endEditCommand()
+        if self.layer.commitChanges():
+            return True
+        from qgis.PyQt.QtCore import QThread
+        QThread.msleep(1200)   # 等杀毒/同步盘放手；一次性 1.2s 卡顿可接受
+        if self.layer.commitChanges():
+            self.log(f"[i] {what}第一次被文件锁挡了一下，重试成功——"
+                     "多半是杀毒/OneDrive 瞬时占用，建议把成果目录加白名单")
+            return True
+        errs = [e.strip() for e in self.layer.commitErrors() if e.strip()]
+        tail = " | ".join(errs[-3:]) if errs else "（QGIS 未给出细节）"
+        self.log(f"[错误] {what}失败：{tail}")
+        self.log("[提示] Windows 常见原因：①同一 GPKG 被别的图层或第二个 "
+                 "QGIS 窗口开着 ②杀毒/OneDrive 正在扫文件 ③旁边残留 "
+                 "-wal/-shm（全关 QGIS 后可删）。关掉占用者再点一次保存即可")
+        return False
+
     def save(self):
         if self.layer is None:
             return
-        if self.layer.isEditCommandActive():
-            self.layer.endEditCommand()
         if not self.layer.isEditable():
             self.layer.startEditing()
             return
-        if not self.layer.commitChanges():
-            self.log("[错误] 保存失败，请检查输出文件是否被占用")
-            return
-        self.layer.startEditing()
-        self._ledger_sess += 1
-        self._undo_prev = 0
-        self.log("[i] 已保存")
+        if self._commit_layer("保存"):
+            self.layer.startEditing()
+            self._ledger_sess += 1
+            self._undo_prev = 0
+            self.log("[i] 已保存")
 
     def undo(self):
         if self.layer is None:
@@ -1609,14 +1646,16 @@ class AnnotationController:
             self.set_layer_views(False)
         if self.layer is None:
             return
-        if self.layer.isEditCommandActive():
-            self.layer.endEditCommand()
-        if self.layer.isEditable():
-            if self.layer.commitChanges():
-                self.log("[i] 关闭前已自动保存")
-            else:
-                self.layer.rollBack()
-                self.log("[警告] 自动保存失败，未提交的修改已回滚")
+        if not self.layer.isEditable():
+            return
+        # 失败不再回滚：编辑留在缓冲里，排掉占用者后重开工作台还能保存
+        # （回滚=直接丢工作，v0.9.3 起弃）
+        if self._commit_layer("关闭前自动保存"):
+            self.log("[i] 关闭前已自动保存")
+        else:
+            self.log("[警告] 自动保存失败：编辑仍留在缓冲里——关掉占用 "
+                     "GPKG 的程序（另一个 QGIS 窗口/杀毒/OneDrive）后"
+                     "重开工作台再点「💾 保存」")
         self.layer.triggerRepaint()
 
 
