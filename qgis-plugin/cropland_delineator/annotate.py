@@ -512,6 +512,24 @@ class AnnotationController:
         except TypeError:
             return line.buffer(half_width, 8)
 
+    def _osm_buffer(self, g, full_width):
+        """OSM 路网专用缓冲：两端各外延半宽后再平头缓冲。
+
+        OSM 路网在路口被拆成短段，相邻段端点常有 2~8m 错位（实测缓存
+        202 对）；逐段平头缓冲的接缝会留菱形空白（实机"拐弯小尖"，
+        v0.9.2）。外延半宽让相邻段缓冲互相叠压，接缝被盖住。代价：
+        真正的断头路末端多扣半宽一段——远小于接缝留白的危害。
+        手画/磁力道路不走这里（端点钉在哪扣到哪的语义保留）。"""
+        half = full_width / 2.0
+        g2 = QgsGeometry(g)
+        try:
+            g2 = g2.extendLine(half, half)
+        except Exception:
+            g2 = QgsGeometry(g)
+        if g2 is None or g2.isEmpty():
+            g2 = QgsGeometry(g)
+        return self._buffer(g2, half)
+
     # ---------- 几何运算（每笔一个编辑命令 = 一步撤销） ----------
 
     def _require_cell(self):
@@ -913,7 +931,7 @@ class AnnotationController:
                 g.transform(xform)
             major = str(f["highway"] or "") in osm_roads.MAJOR_CLASSES
             width = self.road_widths[0 if major else 1]
-            buf = self._buffer(g, width / 2.0)
+            buf = self._osm_buffer(g, width)
             if buf is not None and not buf.isEmpty():
                 bufs.append(buf)
                 roads_wkt.append((g.asWkt(), width))
@@ -1436,7 +1454,10 @@ class AnnotationController:
             return
         if kind in ("road", "osm"):
             width = float(r["params"].get("width") or self.road_width())
-            self._run_difference(self._buffer(g, width / 2.0))
+            if kind == "osm":
+                self._run_difference(self._osm_buffer(g, width))
+            else:
+                self._run_difference(self._buffer(g, width / 2.0))
         elif kind in ("rect", "erase"):
             self._run_difference(g)
         elif kind == "add":
@@ -1539,7 +1560,8 @@ class AnnotationController:
                     continue
                 if buffered and r["kind"] in ("road", "osm"):
                     w = float(r["params"].get("width") or self.road_width())
-                    g = self._buffer(g, w / 2.0)
+                    g = (self._osm_buffer(g, w) if r["kind"] == "osm"
+                         else self._buffer(g, w / 2.0))
                     if g is None or g.isEmpty():
                         continue
                 f = QgsFeature(vl.fields())
