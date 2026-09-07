@@ -1726,8 +1726,17 @@ class AnnotateDock(QDockWidget):
         退格/Ctrl+Z 无论焦点在主窗口哪里都作用于笔迹。
 
         严格限定范围避免劫持：工作台隐藏、非本插件工具、其它窗口
-        （对话框/弹层）、文本输入框内的一律放行。"""
-        if ev.type() != QEvent.Type.KeyPress or not self.isVisible():
+        （对话框/弹层）、文本输入框内的一律放行。
+
+        Ctrl+Z 特殊：主窗口原生撤销是 QShortcut，按键先以
+        ShortcutOverride 事件征询焦点控件，无人认领则快捷键直接触发、
+        KeyPress 根本不会进到这里（v0.8.10 实机事故：点选落点后按
+        Ctrl+Z 撤掉的是底板）。因此笔迹进行中的 Ctrl+Z 要在
+        ShortcutOverride 阶段就 accept 截胡，按键随即以普通 KeyPress
+        回到下面同一套梯级；无笔迹时放行，让原生撤销照常工作。"""
+        ty = ev.type()
+        if (ty not in (QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride)
+                or not self.isVisible()):
             return super().eventFilter(obj, ev)
         if not isinstance(obj, QWidget):
             # 应用级过滤器会看到非控件目标（QWindow 等，Qt6 下部分按键
@@ -1744,6 +1753,11 @@ class AnnotateDock(QDockWidget):
         key, mods = ev.key(), ev.modifiers()
         ctrl_z = (key == Qt.Key.Key_Z
                   and mods == Qt.KeyboardModifier.ControlModifier)
+        if ty == QEvent.Type.ShortcutOverride:
+            if ctrl_z and tool.has_stroke():
+                ev.accept()   # 认领：原生撤销快捷键不再触发
+                return True
+            return super().eventFilter(obj, ev)
         if tool.has_stroke():
             if key == Qt.Key.Key_Escape:
                 tool.cancel()
