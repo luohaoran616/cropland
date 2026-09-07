@@ -2060,6 +2060,11 @@ class AnnotateDock(QDockWidget):
              "（红带=将按档位宽度扣除的范围），收笔即从底板扣除——适合 OSM "
              "路网没覆盖、需手动选除的道路；1/2 换大/小路档，[ ] 调宽，"
              "Backspace / Ctrl+Z 退点（快捷键 R）"),
+            ("magpoly", "🧲🟩 磁力补画", "沿目标边界点一圈顶点，整块耕地『磁力描』出来："
+             "每段自动吸影像上的田埂/边界（虚线=建议线，点击即采纳），"
+             "右键/Enter 闭合落地为补画，1=补画（绿）2=挖除（红），"
+             "Backspace / Ctrl+Z 退点，Esc 取消。无反差的弱边界有无神经"
+             "边界证据（nn/ 边缘证据 npz）差异最明显"),
             ("road", "🛣 道路", "沿路画中心线，自动按当前档位宽度缓冲并从底板扣除"),
             ("split", "✂ 切分", "画一条线把大地块从缝隙处分成两块（田间小路）"),
             ("rect", "⬛ 框挖", "拖框扣除城镇等连片建设区"),
@@ -2269,6 +2274,7 @@ class AnnotateDock(QDockWidget):
             "split": map_tools.PolylineTool(canvas, self.wb, "line", "cyan", "split"),
             "msplit": map_tools.MagneticSplitTool(canvas, self.wb),
             "mroad": map_tools.MagneticSplitTool(canvas, self.wb, "road"),
+            "magpoly": map_tools.MagneticSplitTool(canvas, self.wb, "poly"),
             "rect": map_tools.RectEraseTool(canvas, self.wb),
             "erase": map_tools.PolygonTool(canvas, self.wb, "erase"),
             "add": map_tools.PolygonTool(canvas, self.wb, "add"),

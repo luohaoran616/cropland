@@ -15,7 +15,7 @@ from qgis.core import (
 )
 from qgis.gui import QgsMapTool, QgsRubberBand, QgsVertexMarker
 
-from .lasso import assemble, simplify_pts, grow_ends
+from .lasso import assemble, simplify_pts, grow_ends, _same
 
 
 def _geometry_type_enum(kind):
@@ -289,7 +289,7 @@ class PathThread(QThread):
 
 
 class MagneticSplitTool(WorkbenchTool):
-    """磁力切分 / 磁力道路：点两个锚点，中间自动沿影像上的线状地物走。
+    """磁力切分 / 磁力道路 / 磁力补画：点锚点，中间自动沿影像上的线状地物走。
 
     长线中途多点几颗锚点防跑偏；路径只在两端点所在的瓦片对齐窗口内
     计算（青色虚线框所示），预览与提交同一结果——看到的虚线就是点击
@@ -298,12 +298,18 @@ class MagneticSplitTool(WorkbenchTool):
     mode='split'：右键/Enter 收笔 → 与 ✂ 切分相同的落层逻辑（端点外推
     到出地块后 splitGeometry）。mode='road'：收笔 → 与 🛣 道路笔刷相同
     的缓冲差集（按当前档位宽度扣除，红带预览=将扣的范围，端点不外推），
-    用于 OSM 路网没覆盖、需要手选扣除的道路。
+    用于 OSM 路网没覆盖、需要手选扣除的道路。mode='poly'：磁力补画——
+    沿目标边界点一圈顶点，每段吸边，收笔时补算闭合段成环，整块落地为
+    补画（1）或挖除（2）。
     """
 
     def __init__(self, canvas, wb, mode="split"):
-        super().__init__(canvas, wb, "line", "magenta")
-        self.mode = mode          # 'split' | 'road'
+        if mode == "poly":
+            super().__init__(canvas, wb, "polygon", "green", 45)
+            self.poly_mode = "add"   # 1=补画（绿） 2=挖除（红）
+        else:
+            super().__init__(canvas, wb, "line", "magenta")
+        self.mode = mode          # 'split' | 'road' | 'poly'
         self.anchors = []          # 锚点（地图 CRS）
         self.segs = {}             # 段号 → 路径顶点（地图 CRS，含段起点）
         self.preview = []          # 末锚点→光标的实时预览（虚线）
@@ -329,7 +335,11 @@ class MagneticSplitTool(WorkbenchTool):
 
     def activate(self):
         super().activate()
-        if self.mode == "road":
+        if self.mode == "poly":
+            self.wb.log("[磁力描] 沿目标边界左键点一圈顶点（每段自动吸边，"
+                        "虚线=建议线）→ 右键或 Enter 闭合落地 · 1=补画（绿）"
+                        "2=挖除（红） · Backspace / Ctrl+Z 退点 · Esc 取消")
+        elif self.mode == "road":
             self.wb.log("[磁力道] 左键点起点 → 移动（虚线=建议线，红带=按当前"
                         "档宽将扣除的范围）→ 点终点，长路中途多点锚点 → 右键"
                         "或 Enter 扣除 · 1/2 换大/小路档 · [ ] 调宽度 · "
@@ -371,10 +381,30 @@ class MagneticSplitTool(WorkbenchTool):
     # ---------- 事件 ----------
 
     def keyPressEvent(self, e):
+        if self.mode == "poly" and e.text() in ("1", "2"):
+            self._set_poly_mode("add" if e.text() == "1" else "erase")
+            e.accept()
+            return
         super().keyPressEvent(e)
         # 道路模式换档/调宽后立即刷新红色缓冲带（不用等下一次移动鼠标）
         if self.mode == "road" and e.text() in ("1", "2", "[", "]"):
             self._refresh_preview(None)
+
+    def _set_poly_mode(self, m):
+        if m == self.poly_mode:
+            return
+        self.poly_mode = m
+        self.wb.log(f"[磁力描] 落地模式：{'补画' if m == 'add' else '挖除'}")
+        if self.rb is not None:
+            try:
+                c = QColor("green" if m == "add" else "red")
+                f = QColor(c)
+                f.setAlpha(45)
+                self.rb.setStrokeColor(c)
+                self.rb.setFillColor(f)
+            except Exception:
+                pass
+        self._refresh_preview(None)
 
     def canvasMoveEvent(self, e):
         self._cursor = self._map_point(e)
@@ -427,12 +457,13 @@ class MagneticSplitTool(WorkbenchTool):
             if self.preview:
                 self._pv_target = QgsPointXY(*res["target"])
             self._show_window(res["win"])
-        elif 0 <= res["idx"] < len(self.anchors) - 1:
+        elif 0 <= res["idx"] <= len(self.anchors) - 1:
+            # idx==len-1 是补画模式的闭合段（末顶点→首顶点）
             self.segs[res["idx"]] = [QgsPointXY(x, y) for x, y in res["pts"]]
         self._refresh_preview(None)
         if self._pending_finish and self._commit_busy() == 0:
             self._pending_finish = False
-            self._do_finish()
+            self._finish()   # 重走收笔判定（poly 此时才补算/采用闭合段）
 
     def _commit_busy(self):
         return sum(1 for t in list(self._threads)
@@ -441,6 +472,19 @@ class MagneticSplitTool(WorkbenchTool):
     # ---------- 预览 ----------
 
     def _refresh_preview(self, cur):
+        if self.mode == "poly":
+            # 面环预览：已定段连成环 + 到光标的建议线（虚线）
+            rb = self._ensure_rb()
+            rb.reset(_geometry_type_enum("polygon"))
+            ring = assemble(self.anchors, self.segs) if self.anchors else []
+            pv = list(self.preview) + ([cur] if cur else [])
+            for p in ring + pv + ([ring[0]] if ring else []):
+                rb.addPoint(p)
+            band = self._ensure_pv_band()
+            band.reset(_geometry_type_enum("line"))
+            for p in pv:
+                band.addPoint(p)
+            return
         rb = self._ensure_rb()
         rb.reset(_geometry_type_enum("line"))
         for p in assemble(self.anchors, self.segs):
@@ -536,6 +580,8 @@ class MagneticSplitTool(WorkbenchTool):
 
     def remove_last(self):
         if self.anchors:
+            self._gen += 1          # 作废在途段（含闭合段），防迟到结果落进旧槽
+            self._pending_finish = False
             self.anchors.pop()
             self.segs.pop(len(self.anchors), None)
             self.preview = []
@@ -560,7 +606,8 @@ class MagneticSplitTool(WorkbenchTool):
         self._hide_window()
         self._clear_marks()
         if self.rb is not None:
-            self.rb.reset(_geometry_type_enum("line"))
+            self.rb.reset(_geometry_type_enum(
+                "polygon" if self.mode == "poly" else "line"))
         if self.rb_pv is not None:
             self.rb_pv.reset(_geometry_type_enum("line"))
         if self.rb_buf is not None:
@@ -577,6 +624,24 @@ class MagneticSplitTool(WorkbenchTool):
     # ---------- 收笔 ----------
 
     def _finish(self):
+        if self.mode == "poly":
+            if len(self.anchors) < 3:
+                self.wb.log("[提示] 至少点 3 个顶点圈出区域再收笔")
+                return
+            if self._commit_busy():
+                self._pending_finish = True
+                self.wb.log("[磁力] 最后一段还在算，稍候…")
+                return
+            n = len(self.anchors)
+            if (self._engine is not None
+                    and self.segs.get(n - 1) is None):
+                # 闭合段（末顶点→首顶点）还没算：后台补算，回来再落地
+                self._pending_finish = True
+                self.wb.log("[磁力] 正在算闭合段，稍候…")
+                self._launch(self.anchors[-1], self.anchors[0], n - 1)
+                return
+            self._do_finish()
+            return
         if len(self.anchors) < 2:
             self.wb.log("[提示] 至少点两个锚点（起点、终点）再收笔")
             return
@@ -588,6 +653,30 @@ class MagneticSplitTool(WorkbenchTool):
 
     def _do_finish(self):
         self._gen += 1
+        if self.mode == "poly":
+            n = len(self.anchors)
+            ring = assemble(self.anchors, self.segs)
+            for p in (self.segs.get(n - 1) or []):   # 闭合段：末顶点→首顶点
+                if ring and not _same(ring[-1], p):
+                    ring.append(p)
+            if len(ring) >= 3:
+                tol = (1.2 * self._engine.pixel_size()
+                       if self._engine is not None else 0.0)
+                ring = simplify_pts(ring, tol)
+                if not _same(ring[0], ring[-1]):
+                    ring = list(ring) + [ring[0]]
+                geom = QgsGeometry.fromPolygonXY([ring])
+                add = self.poly_mode == "add"
+                self._reset_stroke()
+                g = self.wb.to_layer(geom)
+                if add:
+                    self.wb.apply_add(g)
+                else:
+                    self.wb.apply_difference(g, "erase")
+            else:
+                self._reset_stroke()
+                self.wb.log("[提示] 顶点不足（至少 3 个），已忽略")
+            return
         pts = assemble(self.anchors, self.segs)
         tol = 1.2 * self._engine.pixel_size() if self._engine is not None else 0.0
         if len(pts) < 2:
