@@ -5,12 +5,12 @@
     python3 tools/release_plugin.py [--repo luohaoran616/cropland]
 
 产出：
-    dist/cropland_delineator-<版本>.zip   # 顶层为 cropland_delineator/，
+    dist/cropland_delineator.<版本>.zip   # 顶层为 cropland_delineator/，
                                           # 已排除 tests / __pycache__ / *.pyc
     dist/plugins.xml                      # 供 QGIS「插件源」使用的索引
 
 随后用 gh 创建 Release（publish.sh 已自动包含）：
-    gh release create v<版本> dist/cropland_delineator-<版本>.zip dist/plugins.xml ...
+    gh release create v<版本> dist/cropland_delineator.<版本>.zip dist/plugins.xml ...
 
 朋友侧只需在 QGIS 里添加一次插件源：
     https://github.com/<repo>/releases/latest/download/plugins.xml
@@ -42,7 +42,11 @@ def read_version():
 
 def build_zip(ver):
     os.makedirs(DIST, exist_ok=True)
-    out = os.path.join(DIST, f"cropland_delineator-{ver}.zip")
+    # 命名必须用「插件名.版本.zip」（点分隔）：QGIS 安装器把 <file_name>
+    # 在第一个点号处截断当插件 id（installer_data.py 的 partition(".")），
+    # 连字符写法会把 id 推成 cropland_delineator-0 → 与 zip 内层目录对不上
+    # → "Could not store plugin to the plugin directory: …/-0"（实机踩过）
+    out = os.path.join(DIST, f"cropland_delineator.{ver}.zip")
     n = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for dirpath, dirnames, filenames in os.walk(SRC):

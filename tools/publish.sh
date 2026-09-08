@@ -26,7 +26,7 @@ git push -u origin main || {
 # 2) 打包 + 建 Release（带 ZIP 与 plugins.xml 两个资产）
 python3 tools/release_plugin.py --repo "$REPO"
 gh release create "v$VER" \
-    "dist/cropland_delineator-$VER.zip" dist/plugins.xml \
+    "dist/cropland_delineator.$VER.zip" dist/plugins.xml \
     -t "v$VER" -n "耕地标注工作台 v$VER。升级直接在 QGIS 插件管理器里点「升级」。"
 
 echo
