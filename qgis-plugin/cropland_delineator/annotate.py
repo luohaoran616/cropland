@@ -375,18 +375,16 @@ class AnnotationController:
                 break
             except (AttributeError, TypeError):
                 continue
-        # setType 需要 flags 对象（QGIS4: Qgis.SnappingTypes / QGIS3: SnappingTypeFlag）
-        for flags in (
-            lambda: Qgis.SnappingTypes(
-                int(Qgis.SnappingType.Vertex) | int(Qgis.SnappingType.Segment)),
-            lambda: (QgsSnappingConfig.SnappingTypeFlag.Vertex
-                     | QgsSnappingConfig.SnappingTypeFlag.Segment),
-        ):
+        # 捕捉类型：QGIS≥4 走 setTypeFlag(flags)；QGIS3 走 setType(旧单值枚举)。
+        # （v0.9.6 前的写法在 4.2 上两个候选都 TypeError，靠默认值碰巧兜住）
+        try:
+            cfg.setTypeFlag(Qgis.SnappingTypes(
+                int(Qgis.SnappingType.Vertex) | int(Qgis.SnappingType.Segment)))
+        except (AttributeError, TypeError):
             try:
-                cfg.setType(flags())
-                break
+                cfg.setType(QgsSnappingConfig.SnappingType.VertexAndSegment)
             except (AttributeError, TypeError):
-                continue
+                pass
         cfg.setUnits(QgsTolerance.UnitType.Pixels)
         cfg.setTolerance(12)
         proj.setSnappingConfig(cfg)

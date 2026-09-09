@@ -13,7 +13,7 @@ from qgis.core import (
     Qgis, QgsCoordinateTransform, QgsGeometry, QgsPointXY, QgsProject,
     QgsWkbTypes,
 )
-from qgis.gui import QgsMapTool, QgsRubberBand, QgsVertexMarker
+from qgis.gui import QgsMapTool, QgsRubberBand, QgsVertexMarker, QgsSnapIndicator
 
 from .lasso import assemble, simplify_pts, grow_ends, _same
 
@@ -57,6 +57,7 @@ class WorkbenchTool(QgsMapTool):
         self.rb_kind = kind
         self.rb_color = color
         self.rb_alpha = alpha_fill
+        self._snap_ind = None   # 自备捕捉标记（QGIS4 不再替自定义工具画）
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     # ---------- 基础设施 ----------
@@ -79,20 +80,57 @@ class WorkbenchTool(QgsMapTool):
                 pass
             self.rb_buf = None
 
-    def _map_point(self, e):
-        """优先吸附点，退回鼠标点。"""
+    def _map_point(self, e, relaxed=False):
+        """优先吸附点（直查捕捉引擎），退回鼠标点。
+
+        不用 QgsMapMouseEvent.snapPoint()：QGIS 4.2 起它内部是非阻塞
+        查询，捕捉索引未就绪时静默返回不吸附——笔刷每落一笔都在编辑
+        图层、索引频繁重建，靠它几乎吸不住（v0.9.6 实测根因）。这里
+        直接调 snappingUtils().snapToMap()：先非阻塞试一次（索引热则
+        零开销），落点场景（relaxed=False）再阻塞补建索引确保吸到；
+        悬停预览传 relaxed=True 保证不卡 UI。旧兜底把 e.pos() 的像素
+        坐标喂给 snapToMap，永远无效，一并废弃。
+        """
+        if hasattr(e, "originalMapPoint"):
+            pt = e.originalMapPoint()
+        else:
+            pt = self.toMapCoordinates(e.pos())
         try:
-            return e.snapPoint()  # QgsMapMouseEvent 自动吸附
-        except Exception:
-            pass
-        su = self.canvas().snappingUtils()
-        try:
-            m = su.snapToMap(e.pos())
+            su = self.canvas().snappingUtils()
+            try:
+                m = su.snapToMap(pt, None, True)      # 先非阻塞
+            except TypeError:                          # 旧绑定无 relaxed 形参
+                m = su.snapToMap(pt)
+            if not m.isValid() and not relaxed:
+                m = su.snapToMap(pt)                   # 落点：缺索引就现场建
             if m.isValid():
+                self._show_snap_mark(m)
                 return QgsPointXY(m.point())
         except Exception:
             pass
-        return self.toMapCoordinates(e.pos())
+        self._hide_snap_mark()
+        return pt
+
+    def _show_snap_mark(self, m):
+        """落点/悬停的捕捉标记：QGIS4 里画布不再替自定义工具画，
+        自备 QgsSnapIndicator（与内置编辑工具同款样式）。"""
+        try:
+            if self._snap_ind is None:
+                self._snap_ind = QgsSnapIndicator(self.canvas())
+            if hasattr(self._snap_ind, "setMatch"):   # QGIS 4.2+
+                self._snap_ind.setMatch(m)
+                self._snap_ind.setVisible(True)
+            else:                                      # QGIS 3
+                self._snap_ind.showMatch(m)
+        except Exception:
+            pass
+
+    def _hide_snap_mark(self):
+        if self._snap_ind is not None:
+            try:
+                self._snap_ind.setVisible(False)
+            except Exception:
+                pass
 
     def cancel(self):
         self.pts = []
@@ -100,6 +138,7 @@ class WorkbenchTool(QgsMapTool):
             self.rb.reset(_geometry_type_enum(self.rb_kind))
         if self.rb_buf is not None:
             self.rb_buf.reset(_geometry_type_enum("polygon"))
+        self._hide_snap_mark()
         self.wb.log("[提示] 已取消当前笔")
 
     # 道路类工具共用的缓冲预览带（红半透明=将扣除的范围）
@@ -133,7 +172,7 @@ class WorkbenchTool(QgsMapTool):
     # ---------- 事件 ----------
 
     def canvasMoveEvent(self, e):
-        self._refresh_preview(self._map_point(e))
+        self._refresh_preview(self._map_point(e, relaxed=True))
 
     def keyPressEvent(self, e):
         key = e.key()
@@ -163,6 +202,7 @@ class WorkbenchTool(QgsMapTool):
     def deactivate(self):
         self.pts = []
         self._clear_rb()
+        self._hide_snap_mark()
         super().deactivate()
 
     # ---------- 子类实现 ----------
@@ -407,7 +447,7 @@ class MagneticSplitTool(WorkbenchTool):
         self._refresh_preview(None)
 
     def canvasMoveEvent(self, e):
-        self._cursor = self._map_point(e)
+        self._cursor = self._map_point(e, relaxed=True)
         if self.anchors:
             self._timer.start()
         self._refresh_preview(None)
@@ -725,7 +765,7 @@ class RectEraseTool(WorkbenchTool):
     def canvasMoveEvent(self, e):
         if self.anchor is None:
             return
-        cur = self._map_point(e)
+        cur = self._map_point(e, relaxed=True)
         rb = self._ensure_rb()
         rb.reset(_geometry_type_enum("polygon"))
         for p in (self.anchor,
