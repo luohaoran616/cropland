@@ -338,15 +338,17 @@ class MagneticSplitTool(WorkbenchTool):
     mode='split'：右键/Enter 收笔 → 与 ✂ 切分相同的落层逻辑（端点外推
     到出地块后 splitGeometry）。mode='road'：收笔 → 与 🛣 道路笔刷相同
     的缓冲差集（按当前档位宽度扣除，红带预览=将扣的范围，端点不外推），
-    用于 OSM 路网没覆盖、需要手选扣除的道路。mode='poly'：磁力补画——
+    用于 OSM 路网没覆盖、需要手选扣除的道路。mode='poly'：磁力描边——
     沿目标边界点一圈顶点，每段吸边，收笔时补算闭合段成环，整块落地为
-    补画（1）或挖除（2）。
+    补画（1）或挖除（2）；poly_default 决定初始落地模式与配色：
+    "add"=磁力补画（绿），"erase"=磁力挖（红），按 1/2 随时可换。
     """
 
-    def __init__(self, canvas, wb, mode="split"):
+    def __init__(self, canvas, wb, mode="split", poly_default="add"):
         if mode == "poly":
-            super().__init__(canvas, wb, "polygon", "green", 45)
-            self.poly_mode = "add"   # 1=补画（绿） 2=挖除（红）
+            super().__init__(canvas, wb, "polygon",
+                             "green" if poly_default == "add" else "red", 45)
+            self.poly_mode = poly_default   # 1=补画（绿） 2=挖除（红）
         else:
             super().__init__(canvas, wb, "line", "magenta")
         self.mode = mode          # 'split' | 'road' | 'poly'
@@ -751,58 +753,6 @@ class MagneticSplitTool(WorkbenchTool):
         return grow_ends(pts, inside, max(step, 10.0))
 
 
-class RectEraseTool(WorkbenchTool):
-    """框选挖除：左键按下拖动画矩形，松开即差集。"""
-
-    def __init__(self, canvas, wb):
-        super().__init__(canvas, wb, "polygon", "red", 45)
-        self.anchor = None
-
-    def canvasPressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self.anchor = self._map_point(e)
-
-    def canvasMoveEvent(self, e):
-        if self.anchor is None:
-            return
-        cur = self._map_point(e, relaxed=True)
-        rb = self._ensure_rb()
-        rb.reset(_geometry_type_enum("polygon"))
-        for p in (self.anchor,
-                  QgsPointXY(cur.x(), self.anchor.y()),
-                  cur,
-                  QgsPointXY(self.anchor.x(), cur.y()),
-                  self.anchor):
-            rb.addPoint(p)
-
-    def canvasReleaseEvent(self, e):
-        if e.button() != Qt.MouseButton.LeftButton or self.anchor is None:
-            return
-        cur = self._map_point(e)
-        x0, x1 = sorted((self.anchor.x(), cur.x()))
-        y0, y1 = sorted((self.anchor.y(), cur.y()))
-        self.anchor = None
-        if self.rb is not None:
-            self.rb.reset(_geometry_type_enum("polygon"))
-        if x1 - x0 < 1e-6 or y1 - y0 < 1e-6:
-            return
-        rect = QgsGeometry.fromPolygonXY([[
-            QgsPointXY(x0, y0), QgsPointXY(x1, y0),
-            QgsPointXY(x1, y1), QgsPointXY(x0, y1), QgsPointXY(x0, y0),
-        ]])
-        self.wb.apply_difference(self.wb.to_layer(rect), "erase")
-
-    def _refresh_preview(self, cur):
-        pass  # 预览在 canvasMoveEvent 里按锚点画
-
-    def _finish(self):
-        pass
-
-    def cancel(self):
-        self.anchor = None
-        super().cancel()
-
-
 class PolygonTool(WorkbenchTool):
     """多边形类工具：多边形挖除（差集）与补画（裁回格子后新增）。"""
 
@@ -827,13 +777,14 @@ class PolygonTool(WorkbenchTool):
         return QgsGeometry.fromPolygonXY([pts + [pts[0]]])
 
     def _refresh_preview(self, cur):
-        geom = self._poly_geom(cur)
+        # 预览不设最少点数门槛：第一点落定后即显示"点→光标"连线，
+        # 与内置多边形工具一致（收笔落地仍按 MIN_POINTS=3 校验）
         rb = self._ensure_rb()
         rb.reset(_geometry_type_enum("polygon"))
-        if geom is None:
-            return
-        for p in geom.asPolygon()[0]:
-            rb.addPoint(p)
+        pts = list(self.pts) + ([cur] if cur else [])
+        if len(pts) >= 2:
+            for p in pts:
+                rb.addPoint(p)
 
     def _finish(self):
         geom = self._poly_geom()

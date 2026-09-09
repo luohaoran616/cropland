@@ -3,7 +3,8 @@
 
 数据模型（annotation 层，与渔网同 CRS）：
   cell_id  格子编号（优先取渔网 FID_1 字段，如 海城市_2_4）
-  source   base=整格底板 / road=道路笔刷差集后的残余 / erase=框/多边形挖除后
+  source   base=整格底板 / road=道路笔刷差集后的残余 / erase=磁力挖（旧版
+           框挖/多边形挖）扣后的残余
            的残余 / add=手画补块 / model=模型候选接纳（P1）
   created  创建时间
 每个要素保持单部件；差集/切分产生多部件时立即拆分成多个要素。
@@ -1317,7 +1318,7 @@ class AnnotationController:
         "osm": "🌐 OSM 道路",
         "road": "🛣 道路",
         "rect": "⬛ 框挖",
-        "erase": "🟥 多边形挖",
+        "erase": "🟥 挖除",
         "add": "🟩 补画",
         "split": "✂ 切分",
     }
@@ -1537,7 +1538,7 @@ class AnnotationController:
          "255,60,60", True),
     )
     VIEW_KIND_NAMES = {"base": "整格底板", "baseline": "存量基线", "road": "道路",
-                       "osm": "OSM 道路", "rect": "框挖(城镇等)", "erase": "多边形挖",
+                       "osm": "OSM 道路", "rect": "框挖(旧版)", "erase": "挖除",
                        "add": "补块", "split": "切分"}
 
     def set_layer_views(self, on):
@@ -2126,8 +2127,11 @@ class AnnotateDock(QDockWidget):
              "边界证据（nn/ 边缘证据 npz）差异最明显"),
             ("road", "🛣 道路", "沿路画中心线，自动按当前档位宽度缓冲并从底板扣除"),
             ("split", "✂ 切分", "画一条线把大地块从缝隙处分成两块（田间小路）"),
-            ("rect", "⬛ 框挖", "拖框扣除城镇等连片建设区"),
-            ("erase", "🟥 多边形挖", "画多边形扣除非耕地（林地、水域等不规则区域）"),
+            ("magerase", "🧲🟥 磁力挖", "沿非耕地边界点一圈顶点，整块『磁力描』出来挖除"
+             "（林地、水域等不规则区域）：每段自动吸影像上的田埂/边界"
+             "（虚线=建议线，点击即采纳），右键/Enter 闭合落地为挖除，"
+             "1=补画（绿）2=挖除（红），Backspace / Ctrl+Z 退点，Esc 取消。"
+             "无影像时退化为普通多边形，照样能用"),
             ("add", "🟩 补画", "画多边形直接补一块耕地（建筑密集格用加法），自动裁回格子"),
             ("clickseg", "🖱 点选", "SAM 点选分割：左键加正点（目标内部），"
              "右键加负点（排除误粘部分），AI 沿影像边界实时出掩码预览，"
@@ -2336,8 +2340,8 @@ class AnnotateDock(QDockWidget):
             "msplit": map_tools.MagneticSplitTool(canvas, self.wb),
             "mroad": map_tools.MagneticSplitTool(canvas, self.wb, "road"),
             "magpoly": map_tools.MagneticSplitTool(canvas, self.wb, "poly"),
-            "rect": map_tools.RectEraseTool(canvas, self.wb),
-            "erase": map_tools.PolygonTool(canvas, self.wb, "erase"),
+            "magerase": map_tools.MagneticSplitTool(
+                canvas, self.wb, "poly", poly_default="erase"),
             "add": map_tools.PolygonTool(canvas, self.wb, "add"),
             "clickseg": map_tools.ClickSegTool(canvas, self.wb),
         }
