@@ -2102,7 +2102,7 @@ class AnnotateDock(QDockWidget):
         cl.addLayout(orow)
         layout.addWidget(cell_box)
 
-        # ③ 笔刷：2×4 网格（线类一行、面类一行，高频在前）+ 宽度档
+        # ③ 笔刷：×4 网格（高频在前，自动换行）+ 宽度档
         tool_box = QGroupBox("③ 笔刷（左键加点 · 右键/Enter 收笔 · Esc 取消）")
         tool_box.setFlat(True)
         tool_box.setToolTip(
@@ -2167,7 +2167,9 @@ class AnnotateDock(QDockWidget):
             lambda v: self._set_width(0, v))
         self.spin_minor.valueChanged.connect(
             lambda v: self._set_width(1, v))
-        tl.addLayout(wrow, 2, 0, 1, 4)
+        # 宽度档放在按钮网格下面下一行——行号按按钮数动态算，
+        # 写死 2 会和第 9 个按钮叠格（v0.9.0 加磁力补画后实机翻车）
+        tl.addLayout(wrow, (len(tools) + 3) // 4, 0, 1, 4)
         layout.addWidget(tool_box)
 
         # ④ 常用动作条：每格反复按的四个键，与笔刷同屏常驻
