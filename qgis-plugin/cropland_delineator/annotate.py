@@ -494,6 +494,11 @@ class AnnotationController:
     def _clone_feature(self, feat, geom):
         f = QgsFeature(self.layer.fields())
         f.setAttributes(feat.attributes())
+        # GPKG 图层首属性就是主键 fid：克隆若沿用原要素的真实 fid，
+        # 提交时 qgsogrprovider 会把它当显式主键写 INSERT，撞表内既有
+        # 行（UNIQUE constraint failed: *.fid，v0.9.8 修复）。置空让库自增。
+        for i in self.layer.primaryKeyAttributes():
+            f.setAttribute(i, None)
         f.setGeometry(geom)
         return f
 
@@ -1264,9 +1269,29 @@ class AnnotationController:
 
         Windows 实机（v0.9.3）：杀毒实时扫描常瞬锁 .gpkg/-wal，一击
         失败重试通常就过；仍失败则把 commitErrors（真实 OGR 报错，
-        旧版只打"被占用"把细节吞了）连同排查提示一起进日志。"""
+        旧版只打"被占用"把细节吞了）连同排查提示一起进日志。
+
+        提交前先清洗缓冲区新增要素的显式主键（v0.9.8）：GPKG 首属性
+        =fid 时任何拷贝属性进缓冲的路径（历史克隆、外部工具桥接）都会
+        让 INSERT 带上已存在的主键 → UNIQUE constraint failed，且整批
+        回滚、之后每次保存都失败——统一置空让库自增。"""
         if self.layer is None:
             return False
+        try:
+            pk = self.layer.primaryKeyAttributes()
+            buf = self.layer.editBuffer()
+            if pk and buf is not None:
+                dirty = [(fid_, i) for fid_, f in buf.addedFeatures().items()
+                         for i in pk if f.attribute(i) is not None]
+                if dirty:
+                    self.layer.beginEditCommand("清洗显式主键")
+                    for fid_, i in dirty:
+                        self.layer.changeAttributeValue(fid_, i, None)
+                    self.layer.endEditCommand()
+                    self.log(f"[i] 已置空 {len(set(d for d, _ in dirty))} 个"
+                             "新增要素携带的旧主键（防 UNIQUE 冲突）")
+        except Exception:
+            pass
         if self.layer.isEditCommandActive():
             self.layer.endEditCommand()
         if self.layer.commitChanges():
