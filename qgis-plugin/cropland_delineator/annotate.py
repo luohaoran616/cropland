@@ -134,6 +134,9 @@ class AnnotationController:
         self.cell_geom = None          # 图层 CRS 下的格子范围
         self.road_widths = [25.0, 8.0]  # [大路, 小路] 全宽（米）
         self.road_active = 0
+        # 道路缓冲拐角样式：False=圆角（默认，历史行为） True=尖角（Miter）
+        self.road_miter = QSettings().value(
+            "cropland_delineator/road_corner_miter", False, type=bool)
         self.roads_layer = None        # OSM 道路层（拉取后指向它）
         self.raster_layer = None       # 磁力切分用的影像（None=自动探测）
         self._lasso = None             # 当前格的磁力引擎缓存
@@ -164,13 +167,13 @@ class AnnotationController:
         # 重开同一文件：先提交旧层的未落盘笔触再移除实例，并保留当前格
         reopen = self.path == path and self.layer is not None
         if reopen:
-            try:
-                if self.layer.isEditCommandActive():
-                    self.layer.endEditCommand()
-                if self.layer.isEditable():
-                    self.layer.commitChanges()
-            except Exception:
-                pass
+            # 老版把提交失败吞掉就移除图层：坏缓冲连同未保存笔触一起被
+            # 静默丢弃（v0.9.9）。失败必须中止重开，老图层原样保留。
+            if self.layer.isEditable() or self.layer.isEditCommandActive():
+                if not self._commit_layer("重开标注层前保存"):
+                    self.log("[提示] 已取消重开：先解决上面的保存问题再点。"
+                             "图层和未保存的笔触都还在")
+                    return False
             try:
                 QgsProject.instance().removeMapLayer(self.layer.id())
             except Exception:
@@ -416,12 +419,18 @@ class AnnotationController:
         geom.transform(xform)
 
         cell_id = self._cell_id(feat, geom)
-        # 切格前把上一格的编辑落盘，保证撤销栈按格隔离
-        if self.layer.isEditCommandActive():
-            self.layer.endEditCommand()
-        if self.layer.isEditable():
-            self.layer.commitChanges()
-            self.layer.startEditing()
+        # 切格前把上一格的编辑落盘，保证撤销栈按格隔离。提交失败必须
+        # 硬中止切格（v0.9.9）：老版把失败吞掉硬切，旧格未保存的笔触
+        # 会跟着新格混进同一个撤销栈，B 格底板"已建立"却随坏缓冲被
+        # 整体丢弃、图层停在不可编辑的死态——实机"切格后旧格不能编辑"
+        # 的根源。_commit_layer 自带主键清洗+锁重试+真实报错透出。
+        if self.layer.isEditable() or self.layer.isEditCommandActive():
+            if not self._commit_layer(f"切格前保存 {self.current_cell or ''}"):
+                self.log("[提示] 已取消切格：先按上面的提示解决保存问题，"
+                         "再重新选中目标格子点建底板")
+                return False
+        if not self.layer.isEditable():
+            self.layer.startEditing()   # 自愈：救活停在不可编辑的死态
         self._ledger_sess += 1   # 栈已清空：撤销对齐换新会话号
         self._undo_prev = 0
 
@@ -436,12 +445,14 @@ class AnnotationController:
 
         existing = list(self.layer.getFeatures(self._cell_filter("source='base'")))
         if existing:
-            self.log(f"[i] 当前格子：{cell_id}（底板已存在，继续标注）")
+            self.log(f"[i] 当前格子：{cell_id}（底板已存在，继续标注；"
+                     "想编辑别的格：渔网选中那格后再点一次此键即可切回）")
         else:
             self.layer.beginEditCommand("建底板")
             self.layer.addFeature(self._new_feature(geom, "base"))
             self.layer.endEditCommand()
-            self.log(f"[i] 当前格子：{cell_id}（底板已建立）")
+            self.log(f"[i] 当前格子：{cell_id}（底板已建立；上一格已保存，"
+                     "随时可按上述方法切回继续）")
             # 重建底板=该格从头开始：台账清零后记第 1 步
             if self.ledger is not None:
                 self.ledger.reset_cell(cell_id)
@@ -449,6 +460,7 @@ class AnnotationController:
                                     {"source": "base"})
         self.zoom_to_cell()
         self.report_stats()
+        return True
 
     def _cell_id(self, feat, geom):
         fields = [f.name() for f in feat.fields()]
@@ -517,21 +529,34 @@ class AnnotationController:
             1.0, self.road_widths[self.road_active] + delta)
         self.log(f"[i] 道路宽度：{self.road_width():.0f} m")
 
+    def set_road_corner(self, miter):
+        """道路缓冲拐角样式：True=尖角 False=圆角（v0.9.9）。"""
+        self.road_miter = bool(miter)
+        QSettings().setValue(
+            "cropland_delineator/road_corner_miter", self.road_miter)
+        self.log("[i] 道路拐角：尖角（沿拐点直角扣，田块方正）"
+                 if self.road_miter else "[i] 道路拐角：圆角（默认，弧形过渡）")
+
     def buffer_preview(self, line_map):
         """地图 CRS 下的缓冲预览（项目 CRS 为米制时才有效）。"""
         if self.canvas.mapSettings().destinationCrs().isGeographic():
             return None
         return self._buffer(line_map, self.road_width() / 2.0)
 
-    def _buffer(self, line, half_width):
+    def _buffer(self, line, half_width, miter=None):
+        """道路缓冲。miter=True 尖角（Miter，v0.9.9），False/None 圆角。
+        miterLimit=5：一般拐角保持尖角，极尖角自动折中成斜切，不会
+        拖出无限长的尖刺。"""
+        if miter is None:
+            miter = self.road_miter
+        join = Qgis.JoinStyle.Miter if miter else Qgis.JoinStyle.Round
         try:  # QGIS 4：5 参版含 miterLimit
             return line.buffer(
-                half_width, 8, Qgis.EndCapStyle.Flat,
-                Qgis.JoinStyle.Round, 2.0)
+                half_width, 8, Qgis.EndCapStyle.Flat, join, 5.0)
         except TypeError:
             return line.buffer(half_width, 8)
 
-    def _osm_buffer(self, g, full_width):
+    def _osm_buffer(self, g, full_width, miter=None):
         """OSM 路网专用缓冲：两端各外延半宽后再平头缓冲。
 
         OSM 路网在路口被拆成短段，相邻段端点常有 2~8m 错位（实测缓存
@@ -547,7 +572,7 @@ class AnnotationController:
             g2 = QgsGeometry(g)
         if g2 is None or g2.isEmpty():
             g2 = QgsGeometry(g)
-        return self._buffer(g2, half)
+        return self._buffer(g2, half, miter)
 
     # ---------- 几何运算（每笔一个编辑命令 = 一步撤销） ----------
 
@@ -567,7 +592,8 @@ class AnnotationController:
         if n:
             self.log(f"[道路] 宽 {self.road_width():.0f} m，影响 {n} 个要素")
             self._ledger_record("road", line_layer.asWkt(),
-                                {"width": self.road_width()})
+                                {"width": self.road_width(),
+                                 "miter": self.road_miter})
         self.report_stats()
 
     def apply_difference(self, eraser, tag):
@@ -986,7 +1012,8 @@ class AnnotationController:
             seq = None
             for wkt, width in roads_wkt:
                 seq = self._ledger_record("osm", wkt,
-                                          {"width": width}, seq=seq)
+                                          {"width": width,
+                                           "miter": self.road_miter}, seq=seq)
         self.report_stats()
 
     # ---------- E：格子导航 / 进度 / 收尾 QA ----------
@@ -1028,7 +1055,8 @@ class AnnotationController:
             return
         grid = self._grid_layer()
         grid.selectByIds([cells[idx + 1][3]])
-        self.set_cell_from_selection()
+        if not self.set_cell_from_selection() and idx >= 0:
+            grid.selectByIds([cells[idx][3]])   # 切格被中止：选区退回当前格
 
     def cell_stats(self):
         """全部格子聚合：{cell_id: (块数, 面积 m², 有底板)}。"""
@@ -1515,10 +1543,11 @@ class AnnotationController:
             return
         if kind in ("road", "osm"):
             width = float(r["params"].get("width") or self.road_width())
+            miter = r["params"].get("miter")  # v0.9.9 前的旧记录无此键=圆角
             if kind == "osm":
-                self._run_difference(self._osm_buffer(g, width))
+                self._run_difference(self._osm_buffer(g, width, miter))
             else:
-                self._run_difference(self._buffer(g, width / 2.0))
+                self._run_difference(self._buffer(g, width / 2.0, miter))
         elif kind in ("rect", "erase"):
             self._run_difference(g)
         elif kind == "add":
@@ -2189,6 +2218,17 @@ class AnnotateDock(QDockWidget):
         self.spin_minor.setSuffix(" m")
         self.spin_minor.setValue(self.wb.road_widths[1])
         wrow.addWidget(self.spin_minor)
+        wrow.addSpacing(10)
+        self.btn_corner = QPushButton("拐角:圆")
+        self.btn_corner.setCheckable(True)
+        self.btn_corner.setToolTip(
+            "道路缓冲的拐角样式：弹起=圆角（弧形过渡，同旧版）；"
+            "按下=尖角（拐点按直角扣，田块方正）。对 🛣 道路、🧲🛣 磁力"
+            "道路、🌐 OSM 道路挖除和台账重放统一生效，选择会被记住")
+        self.btn_corner.setChecked(self.wb.road_miter)
+        self._sync_corner_btn()
+        self.btn_corner.toggled.connect(self._set_corner)
+        wrow.addWidget(self.btn_corner)
         wrow.addStretch(1)
         self.spin_major.valueChanged.connect(
             lambda v: self._set_width(0, v))
@@ -2311,6 +2351,14 @@ class AnnotateDock(QDockWidget):
 
     def _set_width(self, idx, value):
         self.wb.road_widths[idx] = float(value)
+
+    def _sync_corner_btn(self):
+        self.btn_corner.setText(
+            "拐角:尖" if self.btn_corner.isChecked() else "拐角:圆")
+
+    def _set_corner(self, on):
+        self.wb.set_road_corner(on)
+        self._sync_corner_btn()
 
     def _suggest_path(self, *_):
         grid = self.grid_layer()
