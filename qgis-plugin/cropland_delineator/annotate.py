@@ -866,10 +866,13 @@ class AnnotationController:
             return None
         return self._sam
 
-    def clickseg_context(self):
+    def clickseg_context(self, face_feat=None):
         """(npy路径, 窗口meta, xf画布→影像CRS)；影像/格未就绪返回 (None,None,None)。
 
         窗口按（影像, 当前格）缓存，换格自动重建（npy 覆写、worker 重新编码）。
+        face_feat 给定时改用该地块 bbox 的窗口（v0.10.0 锁面：只对这块地
+        底下的影像做识别），缓存 key 含取整 bbox——地块内部挖补不动 bbox
+        就复用编码，动了边才重建。
         未就绪的原因会写日志（同因只说一次），现场不再有静默失败。
         """
         if self.layer is None:
@@ -882,15 +885,32 @@ class AnnotationController:
             self._clickseg_bail("项目里没有与当前格相交的影像图层")
             return None, None, None
         self._clickseg_bailed = None  # 恢复后允许下次再提示
-        key = (raster.id(), self.current_cell)
+        if face_feat is not None:
+            bb = face_feat.geometry().boundingBox()
+            key = (raster.id(), "face", face_feat.id(),
+                   round(bb.xMinimum(), 1), round(bb.yMinimum(), 1),
+                   round(bb.xMaximum(), 1), round(bb.yMaximum(), 1))
+            npy_name = "face.npy"
+            # 自适应边距：留 1/4 短边做上下文，至少 24px（视野）、至多
+            # 96px（整格窗的惯例）——小地块窗口才不会被边距淹没
+            dp = raster.dataProvider()
+            pw = dp.extent().width() / max(dp.xSize(), 1)
+            short_px = min(bb.width(), bb.height()) / max(pw, 1e-9)
+            margin = int(min(96, max(24, 0.25 * short_px)))
+            rect = bb
+        else:
+            key = (raster.id(), self.current_cell)
+            npy_name = "cell.npy"
+            margin = 96
+            rect = self.cell_geom.boundingBox()
         if self._clickseg_key == key and self._clickseg_ctx is not None:
             return self._clickseg_ctx
         if self._sam_tmp is None:
             self._sam_tmp = tempfile.mkdtemp(prefix="clickseg_")
-        npy = os.path.join(self._sam_tmp, "cell.npy")
+        npy = os.path.join(self._sam_tmp, npy_name)
         try:
             meta = clickseg.build_window_npy(
-                raster, self.cell_geom.boundingBox(), self.layer.crs(), npy)
+                raster, rect, self.layer.crs(), npy, margin_px=margin)
         except Exception as exc:
             self.log(f"[点选] 影像窗口建立失败：{exc}")
             self._clickseg_ctx, self._clickseg_key = None, None
@@ -905,6 +925,48 @@ class AnnotationController:
         self.log(f"[点选] 影像窗口就绪 {meta['w']}×{meta['h']} px"
                  f"（{raster.name()}，像元 {meta['pw']:.1f} m）")
         return self._clickseg_ctx
+
+    # ---------- 锁面（v0.10.0）：地块矢量对点选范围形成约束 ----------
+
+    def parcel_at(self, pt):
+        """点（图层 CRS）所在的本格地块要素；命中多个（历史重叠数据）
+        取面积最小者——最具体的那块。"""
+        if self.layer is None or self.current_cell is None or pt is None:
+            return None
+        best = None
+        for f in self.layer.getFeatures(self._cell_filter()):
+            g = f.geometry()
+            if g is None or g.isEmpty() or not g.contains(pt):
+                continue
+            if best is None or g.area() < best.geometry().area():
+                best = f
+        return best
+
+    def locked_face_selection(self):
+        """标注层恰好单选了一个本格要素时，把它当锁面（尊重 QGIS 里
+        先选好面的习惯；选择是图层状态，工具激活期间仍有效）。"""
+        if self.layer is None or self.current_cell is None:
+            return None
+        if self.layer.selectedFeatureCount() != 1:
+            return None
+        feats = list(self.layer.getSelectedFeatures(self._cell_filter()))
+        return feats[0] if len(feats) == 1 else None
+
+    def free_space_clip(self, geom_layer):
+        """补画约束：裁到格内空隙 = 格 ∖ 已有全部地块（geom 为图层 CRS）。
+
+        掩码压过地块边→重叠、差一点够到边→窄缝，两类老毛病一次根治：
+        裁剪边就是地块自己的边，贴边零缝零叠。"""
+        clipped = geom_layer.intersection(self.cell_geom) \
+            if self.cell_geom is not None else QgsGeometry(geom_layer)
+        for f in self.layer.getFeatures(self._cell_filter()):
+            g = f.geometry()
+            if g is None or g.isEmpty() or not clipped.intersects(g):
+                continue
+            clipped = clipped.difference(g)
+            if clipped.isEmpty():
+                break
+        return clipped
 
     def _clickseg_bail(self, reason):
         """未就绪原因只报一次（防连点刷屏），原因变化时重报。"""
@@ -2191,7 +2253,8 @@ class AnnotateDock(QDockWidget):
              "右键加负点（排除误粘部分），AI 沿影像边界实时出掩码预览，"
              "Enter 落地、Esc 取消、Backspace/Ctrl+Z 退点（没有落点时 "
              "Ctrl+Z=撤销上一笔已落地）；按 1=补画（绿）2=挖除（红）。"
-             "首次使用每格需几秒载入影像"),
+             "锁面（默认开）：挖除只动点中的那块地、补画只补空隙贴边零缝，"
+             "按 3 开关。首次使用每格需几秒载入影像"),
         )
         for i, (key, label, tip) in enumerate(tools):
             btn = QPushButton(label)

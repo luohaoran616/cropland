@@ -6,7 +6,7 @@
   画线时按住 Shift = 正交锁（当前点吸附到与上一点水平/垂直，直路两点即成）
 """
 
-from qgis.PyQt.QtCore import Qt, QTimer, QThread, pyqtSignal
+from qgis.PyQt.QtCore import Qt, QTimer, QThread, pyqtSignal, QSettings
 from qgis.PyQt.QtGui import QColor
 from qgis.PyQt.QtWidgets import QApplication
 from qgis.core import (
@@ -818,6 +818,13 @@ class ClickSegTool(WorkbenchTool):
         self._svc = None
         self._gen = 0          # 笔迹代数：任何点位变动 +1，在途结果对不上即作废
         self._marks = []
+        # 锁面（v0.10.0）：点哪块锁哪块，掩码裁进地块/空隙（3 键开关）
+        self.lock = QSettings().value(
+            "cropland_delineator/clickseg_lock", True, type=bool)
+        self._face = None      # 锁面要素（图层侧；挖除用）
+        self._lock_rb = None   # 锁面高亮描边
+        self._validated = False  # 本笔首点已过锁面校验
+        self._blocked = False    # 本笔被拦（点在空隙挖/点在地块补）
 
     # ---------- 状态 ----------
 
@@ -830,6 +837,11 @@ class ClickSegTool(WorkbenchTool):
         self.mode = m
         name, color = self.MODES[m]
         self.wb.log(f"[点选] 落地模式：{name}")
+        # 换模式=换约束语义：重走首点校验（挖除锁面/补画空隙判定不同）
+        self._face = None
+        self._validated = False
+        self._blocked = False
+        self._clear_lock_rb()
         if self.rb is not None:
             try:
                 c = QColor(color)
@@ -844,6 +856,10 @@ class ClickSegTool(WorkbenchTool):
         self._gen += 1
         self.points = []
         self.mask_geom = None
+        self._face = None
+        self._validated = False
+        self._blocked = False
+        self._clear_lock_rb()
         if self.rb is not None:
             self.rb.reset(_geometry_type_enum("polygon"))
         self._clear_marks()
@@ -863,6 +879,10 @@ class ClickSegTool(WorkbenchTool):
                 self._predict()
             else:
                 self.mask_geom = None
+                self._face = None        # 点退光=本笔重来，锁面随首点重定
+                self._validated = False
+                self._blocked = False
+                self._clear_lock_rb()
                 if self.rb is not None:
                     self.rb.reset(_geometry_type_enum("polygon"))
             return
@@ -915,7 +935,123 @@ class ClickSegTool(WorkbenchTool):
             self._set_mode("erase")
             e.accept()
             return
+        if t == "3":
+            self.set_lock(not self.lock)
+            e.accept()
+            return
         super().keyPressEvent(e)
+
+    # ---------- 锁面（v0.10.0） ----------
+
+    def set_lock(self, on):
+        """锁面开关：开=点哪块锁哪块（挖除只动这块、补画只补空隙），
+        关=老版本大掩码行为（容易切到邻居留碎块）。QSettings 记住。"""
+        self.lock = bool(on)
+        QSettings().setValue("cropland_delineator/clickseg_lock", self.lock)
+        self._face = None
+        self._validated = False
+        self._blocked = False
+        self._clear_lock_rb()
+        if self.lock:
+            self.wb.log("[点选] 锁面：开（默认）——挖除锁在点中的地块、"
+                        "补画只补空隙贴边零缝；再按 3 关闭")
+        else:
+            self.wb.log("[点选] 锁面：关——掩码不再按地块裁剪（老版本"
+                        "行为）；再按 3 重开")
+
+    def _lock_context(self):
+        """选影像窗口并做锁面校验；返回 (ctx, ok)。ok=False=本笔应拦下
+        （已写日志，不预测）。锁面关=老行为（整格窗口、不裁剪）。"""
+        if not self.lock:
+            return self.wb.clickseg_context(), True
+        if self._blocked:
+            # 拦下后用户又点了新位置：当作新一笔重新校验
+            self._blocked = False
+            self._validated = False
+            self._face = None
+            self._clear_lock_rb()
+        if not self._validated:
+            self._validated = True
+            if not self._validate_first_point():
+                self._blocked = True
+                return None, False
+        if self.mode == "erase" and self._face is not None:
+            return self.wb.clickseg_context(self._face), True
+        return self.wb.clickseg_context(), True
+
+    def _validate_first_point(self):
+        """本笔首正点的锁面判定：补画点在地块内=误点拦下；挖除点在
+        空隙=没目标拦下；挖除点在地块内=锁该面（单选要素优先）。"""
+        pos = [p for p, lab in self.points if lab == 1]
+        if not pos:
+            return True  # 理论不可达：首点必为正点（右键负点有前置提示）
+        p1_layer = self.wb.to_layer(QgsGeometry.fromPointXY(pos[0])).asPoint()
+        f_pt = self.wb.parcel_at(p1_layer)
+        if self.mode == "add":
+            if f_pt is not None:
+                self.wb.log("[点选] 补画点在了地块内部（要补的是地块外的"
+                            "空隙/洞）——挪到空隙里点，或按 2 切挖除")
+                return False
+            return True
+        f = self.wb.locked_face_selection() or f_pt
+        if f is None:
+            self.wb.log("[点选] 挖除点在空隙里（没有地块可挖）——"
+                        "请点在地块内部；想清空隙旁的边，先点进地块里")
+            return False
+        self._face = f
+        self._show_lock_face(f)
+        return True
+
+    def _show_lock_face(self, f):
+        """锁面高亮描边（橙），所见即所锁。"""
+        self._clear_lock_rb()
+        g = QgsGeometry(f.geometry())
+        lcrs = self.wb.layer.crs()
+        mcrs = self.canvas().mapSettings().destinationCrs()
+        if lcrs != mcrs:
+            g.transform(QgsCoordinateTransform(lcrs, mcrs, QgsProject.instance()))
+        rb = QgsRubberBand(self.canvas(), _geometry_type_enum("polygon"))
+        rb.setStrokeColor(QColor("orange"))
+        rb.setWidth(2)
+        try:
+            rb.setFillColor(QColor(0, 0, 0, 0))  # 只描边不遮挡
+        except Exception:
+            pass
+        try:
+            rb.setToGeometry(g, mcrs)
+        except TypeError:  # 旧接口无 crs 参数
+            rb.setToGeometry(g, None)
+        self._lock_rb = rb
+        mu = f.geometry().area() / 666.6667
+        self.wb.log(f"[点选] 已锁面（{mu:.1f} 亩）：只识别/修改这一块，"
+                    "本笔掩码会被裁进面内")
+
+    def _clear_lock_rb(self):
+        if self._lock_rb is not None:
+            try:
+                self.canvas().scene().removeItem(self._lock_rb)
+            except Exception:
+                pass
+            self._lock_rb = None
+
+    def _clip_to_lock(self, g):
+        """掩码裁剪（画布CRS进出）：挖除 ∩ 锁面；补画 ∩ 格内空隙。
+        锁面关=原样返回（老行为）。"""
+        if not self.lock:
+            return g
+        gL = self.wb.to_layer(QgsGeometry(g))
+        if self.mode == "erase" and self._face is not None:
+            gL = gL.intersection(QgsGeometry(self._face.geometry()))
+        else:
+            gL = self.wb.free_space_clip(gL)
+        if gL is None or gL.isEmpty():
+            return None
+        lcrs = self.wb.layer.crs()
+        mcrs = self.canvas().mapSettings().destinationCrs()
+        if lcrs != mcrs:
+            gL.transform(QgsCoordinateTransform(lcrs, mcrs,
+                                                QgsProject.instance()))
+        return gL
 
     def add_point(self, p, label):
         self._gen += 1
@@ -934,8 +1070,8 @@ class ClickSegTool(WorkbenchTool):
             self.wb.log(f"[点选] 内部错误（详见 Python 控制台）：\n{tail}")
 
     def _predict_inner(self):
-        ctx = self.wb.clickseg_context()
-        if ctx is None or ctx[0] is None:
+        ctx, ok = self._lock_context()
+        if not ok or ctx is None or ctx[0] is None:
             return
         self._ctx = ctx
         svc = self.wb.sam_click()
@@ -1000,6 +1136,13 @@ class ClickSegTool(WorkbenchTool):
             inv = QgsCoordinateTransform(
                 xf.destinationCrs(), xf.sourceCrs(), QgsProject.instance())
             g.transform(inv)
+        g = self._clip_to_lock(g)   # 锁面裁剪后预览=落地（所见即所得）
+        if g is None or g.isEmpty():
+            self.mask_geom = None
+            if self.rb is not None:
+                self.rb.reset(_geometry_type_enum("polygon"))
+            self.wb.log("[点选] 掩码落在约束范围外——往锁面/空隙里挪点再试")
+            return
         self.mask_geom = g
         self._draw_preview(g)
 
