@@ -614,11 +614,18 @@ class AnnotationController:
         return n
 
     def _run_difference(self, eraser):
-        """在已开启的编辑命令内做差集；调用方负责 begin/endEditCommand。"""
+        """在已开启的编辑命令内做差集；调用方负责 begin/endEditCommand。
+
+        v0.10.1：FilterRect 框选 + intersects 预检——密格（几千地块）上
+        对每个要素都跑一遍 difference 既慢又把没碰到的要素白重写一遍；
+        预检后"影响 N 个要素"也变成真被碰到的数量。"""
         affected = 0
-        feats = list(self.layer.getFeatures(self._cell_filter()))
+        req = self._cell_filter().setFilterRect(eraser.boundingBox())
+        feats = list(self.layer.getFeatures(req))
         for feat in feats:
             g = feat.geometry()
+            if g is None or g.isEmpty() or not g.intersects(eraser):
+                continue
             new = g.difference(eraser)
             parts = poly_parts(new)
             if not parts:
@@ -930,11 +937,13 @@ class AnnotationController:
 
     def parcel_at(self, pt):
         """点（图层 CRS）所在的本格地块要素；命中多个（历史重叠数据）
-        取面积最小者——最具体的那块。"""
+        取面积最小者——最具体的那块。v0.10.1：点框空间索引预筛，
+        万级要素的密格上也不必全表 contains。"""
         if self.layer is None or self.current_cell is None or pt is None:
             return None
+        bb = QgsRectangle(pt.x() - 1.0, pt.y() - 1.0, pt.x() + 1.0, pt.y() + 1.0)
         best = None
-        for f in self.layer.getFeatures(self._cell_filter()):
+        for f in self.layer.getFeatures(self._cell_filter().setFilterRect(bb)):
             g = f.geometry()
             if g is None or g.isEmpty() or not g.contains(pt):
                 continue
@@ -952,20 +961,40 @@ class AnnotationController:
         feats = list(self.layer.getSelectedFeatures(self._cell_filter()))
         return feats[0] if len(feats) == 1 else None
 
-    def free_space_clip(self, geom_layer):
+    def free_space_clip(self, geom_layer, keep_at=None):
         """补画约束：裁到格内空隙 = 格 ∖ 已有全部地块（geom 为图层 CRS）。
 
         掩码压过地块边→重叠、差一点够到边→窄缝，两类老毛病一次根治：
-        裁剪边就是地块自己的边，贴边零缝零叠。"""
+        裁剪边就是地块自己的边，贴边零缝零叠。
+        v0.10.1：①FilterRect 空间索引框选 + 相邻块 unaryUnion 后**一次**
+        差集——密格（几千地块）上逐块 difference 会随掩码变碎而超线性
+        （朋友实机每次点击卡许多秒的根源）；②keep_at 给定时只保留含该
+        点的连通块：点哪补哪，不把缝网灌满成一群碎块。"""
         clipped = geom_layer.intersection(self.cell_geom) \
             if self.cell_geom is not None else QgsGeometry(geom_layer)
-        for f in self.layer.getFeatures(self._cell_filter()):
+        if clipped is None or clipped.isEmpty():
+            return clipped
+        hits = []
+        req = self._cell_filter().setFilterRect(clipped.boundingBox())
+        for f in self.layer.getFeatures(req):
             g = f.geometry()
             if g is None or g.isEmpty() or not clipped.intersects(g):
                 continue
-            clipped = clipped.difference(g)
+            hits.append(QgsGeometry(g))
+        if hits:
+            clipped = clipped.difference(QgsGeometry.unaryUnion(hits))
             if clipped.isEmpty():
-                break
+                return clipped
+        if keep_at is not None:
+            parts = poly_parts(clipped)
+            if len(parts) > 1:
+                pt = QgsGeometry.fromPointXY(keep_at)
+                chosen = [p for p in parts if p.intersects(pt)]
+                sel = chosen or [max(parts, key=lambda p: p.area())]
+                out = sel[0]
+                for p in sel[1:]:
+                    out = out.combine(p)
+                clipped = out
         return clipped
 
     def _clickseg_bail(self, reason):

@@ -979,6 +979,17 @@ class ClickSegTool(WorkbenchTool):
             return self.wb.clickseg_context(self._face), True
         return self.wb.clickseg_context(), True
 
+    def _notice(self, msg):
+        """拦截类提示：日志 + 消息条。v0.10.1：只写日志时画布毫无反应，
+        朋友实机把"被拦下"当成了卡死。"""
+        self.wb.log(msg)
+        try:
+            bar = self.wb.iface.messageBar()
+            bar.pushMessage("点选", msg.split("——")[0].split("；")[0],
+                            Qgis.MessageLevel.Warning, 6)
+        except Exception:
+            pass  # 无 iface/无消息条（无头测试）时只走日志
+
     def _validate_first_point(self):
         """本笔首正点的锁面判定：补画点在地块内=误点拦下；挖除点在
         空隙=没目标拦下；挖除点在地块内=锁该面（单选要素优先）。"""
@@ -989,14 +1000,14 @@ class ClickSegTool(WorkbenchTool):
         f_pt = self.wb.parcel_at(p1_layer)
         if self.mode == "add":
             if f_pt is not None:
-                self.wb.log("[点选] 补画点在了地块内部（要补的是地块外的"
-                            "空隙/洞）——挪到空隙里点，或按 2 切挖除")
+                self._notice("[点选] 补画点在了地块内部（要补的是地块外的"
+                             "空隙/洞）——挪到空隙里点，或按 2 切挖除")
                 return False
             return True
         f = self.wb.locked_face_selection() or f_pt
         if f is None:
-            self.wb.log("[点选] 挖除点在空隙里（没有地块可挖）——"
-                        "请点在地块内部；想清空隙旁的边，先点进地块里")
+            self._notice("[点选] 挖除点在空隙里（没有地块可挖）——"
+                         "请点在地块内部；想清空隙旁的边，先点进地块里")
             return False
         self._face = f
         self._show_lock_face(f)
@@ -1036,14 +1047,20 @@ class ClickSegTool(WorkbenchTool):
 
     def _clip_to_lock(self, g):
         """掩码裁剪（画布CRS进出）：挖除 ∩ 锁面；补画 ∩ 格内空隙。
-        锁面关=原样返回（老行为）。"""
+        锁面关=原样返回（老行为）。补画带 keep_at：只保留含首正点的
+        连通块（点哪补哪，v0.10.1）。"""
         if not self.lock:
             return g
         gL = self.wb.to_layer(QgsGeometry(g))
         if self.mode == "erase" and self._face is not None:
             gL = gL.intersection(QgsGeometry(self._face.geometry()))
         else:
-            gL = self.wb.free_space_clip(gL)
+            pos1 = [p for p, lab in self.points if lab == 1]
+            keep = None
+            if pos1:
+                keep = self.wb.to_layer(
+                    QgsGeometry.fromPointXY(pos1[0])).asPoint()
+            gL = self.wb.free_space_clip(gL, keep_at=keep)
         if gL is None or gL.isEmpty():
             return None
         lcrs = self.wb.layer.crs()
@@ -1141,7 +1158,7 @@ class ClickSegTool(WorkbenchTool):
             self.mask_geom = None
             if self.rb is not None:
                 self.rb.reset(_geometry_type_enum("polygon"))
-            self.wb.log("[点选] 掩码落在约束范围外——往锁面/空隙里挪点再试")
+            self._notice("[点选] 掩码落在约束范围外——往锁面/空隙里挪点再试")
             return
         self.mask_geom = g
         self._draw_preview(g)
