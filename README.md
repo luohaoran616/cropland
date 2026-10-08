@@ -71,13 +71,32 @@ from qgis.PyQt.QtCore import QSettings; QSettings().setValue("cropland_delineato
 ## 开发
 
 ```bash
-# 无头回归（offscreen）
+# 无头回归（offscreen；需本机装有 QGIS 4.x，tests/ 在仓库里）
 cd qgis-plugin/cropland_delineator
 QT_QPA_PLATFORM=offscreen \
 PYTHONPATH=/usr/share/qgis/python:$(git rev-parse --show-toplevel)/qgis-plugin \
-python3 tests/test_ledger.py        # 台账 12 组
-python3 tests/test_lasso.py         # 磁力引擎 15 组
+python3 tests/test_ledger.py        # 台账 17 组
+python3 tests/test_lasso.py         # 磁力引擎 17 组
+python3 tests/test_clickseg.py      # 点选 14 组（含锁面/密格回归）
+# 其余：test_snap 6 / test_workbench_bae 12 / test_qa
 
 # 发版：改 metadata.txt 版本号后
-bash tools/publish.sh
+bash tools/publish.sh               # 需 gh auth login 一次
 ```
+
+### 迁移到另一台开发机
+
+1. `git clone https://github.com/luohaoran616/cropland.git`（私有仓库，
+   先 `gh auth login` 并 `gh auth setup-git`，或配好 SSH key）——
+   插件源码、tests、发版脚本、nn 一键脚本全在仓库里；
+2. 保持目录布局：`<根>/qgis-plugin/cropland_delineator` 与 `<根>/nn`
+   平级（点选按 `../../nn` 相对找推理环境，挪位会找不到）；
+3. 跑 `nn/setup.sh`（或 `setup.bat`）重建 SAM 推理环境（.venv 与权重
+   不进仓库，约 4GB；Windows 还需先装 Python 3.12）；
+4. 装本机 QGIS 4.x——无头测试走系统 QGIS 的 Python（Linux 是
+   `/usr/share/qgis/python`，Windows 换成 QGIS 安装目录的 python +
+   对应 PYTHONPATH）；
+5. 仓库外的资产按需另拷：影像/标注 gpkg/渔网等数据（白名单外）、
+   `dist/` 发布产物（可重新生成）；
+6. 发版前 `gh auth login`；想在 QGIS 里实跑开发版，把插件目录软链
+   （Windows 用目录联接 `mklink /J`）进 QGIS profile 的 plugins 目录。

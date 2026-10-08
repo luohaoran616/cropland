@@ -11,6 +11,9 @@
 /qgis-plugin/cropland_delineator/*
 !/qgis-plugin/cropland_delineator/*.py
 !/qgis-plugin/cropland_delineator/metadata.txt
+!/qgis-plugin/cropland_delineator/tests/
+/qgis-plugin/cropland_delineator/tests/*
+!/qgis-plugin/cropland_delineator/tests/*.py
 !/nn/
 /nn/*
 !/nn/*.py
